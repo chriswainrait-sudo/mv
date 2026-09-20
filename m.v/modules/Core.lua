@@ -1,7 +1,4 @@
 
-
--- Runtime singleton: prevents newer copies of this script from stacking
--- background connections/tasks when the script is injected repeatedly.
 local PRIME_ENV = (getgenv and getgenv()) or _G
 local PRIME_RUNTIME_KEY = "__PRIME_MARVEL_OMEGA_RUNTIME_V2"
 local previousRuntime = PRIME_ENV[PRIME_RUNTIME_KEY]
