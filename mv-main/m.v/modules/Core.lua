@@ -39,6 +39,14 @@ local function TrackRuntimeCleanup(callback)
 end
 
 local Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/chriswainrait-sudo/PrimeLibrary-/refs/heads/main/.lua"))()
+local uiPlayer = game:GetService("Players").LocalPlayer
+assert(uiPlayer, "Marvel Omega: LocalPlayer unavailable")
+local uiParent = uiPlayer:WaitForChild("PlayerGui", 15)
+assert(uiParent, "Marvel Omega: PlayerGui unavailable")
+assert(Fluent.GUI, "Marvel Omega: library does not expose GUI")
+Fluent.GUI.Parent = uiParent
+Fluent.GUI.ResetOnSpawn = false
+
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/chriswainrait-sudo/SaveManager/refs/heads/main/.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/chriswainrait-sudo/InterfaceManager/refs/heads/main/.lua"))()
 
@@ -54,7 +62,7 @@ local IS_MOBILE = (UserInputService.TouchEnabled and not UserInputService.Keyboa
 local windowSize = IS_MOBILE and UDim2.fromOffset(410, 260) or UDim2.fromOffset(620, 370)
 
 local primeTier = type(_G.PRIME_TIER) == "string" and _G.PRIME_TIER:lower() or ""
-local userTier = primeTier == "Premium" or "Freemium"
+local userTier = primeTier == "premium" and "Premium" or "Freemium"
 
 local Window = Fluent:CreateWindow({
     Title = "PRIME",
