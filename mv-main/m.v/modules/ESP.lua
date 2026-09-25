@@ -88,6 +88,10 @@ local function NormalizeAdvancedESPNumericSettings()
 end
 
 local ah, at, ae = false, {}, 0
+local ultimateEnabled = false
+local characterCache = {}
+local renderElapsed = 0
+local players = game:GetService("Players")
 
 function Visual.ToggleAdvancedESP(v)
     NormalizeAdvancedESPNumericSettings()
@@ -122,6 +126,7 @@ function Visual.DestroyAdvancedESP(p)
         elseif k ~= "Full" then RemoveDrawingObject(o) end
     end
     Visual.AdvancedESP.espObjects[p] = nil
+    characterCache[p] = nil
 end
 
 function Visual.HideAdvancedESP(p)
@@ -149,6 +154,9 @@ function Visual.CreateAdvancedESP(p)
     if not d.Name then
         add("Name", "Text", {Size = 10, Center = true, Outline = true, Color = Color3.new(1, 1, 1)})
     end
+    if ultimateEnabled and not d.Ultimate then
+        add("Ultimate", "Text", {Size = 13, Center = true, Outline = true, Color = Color3.fromRGB(190, 85, 255)})
+    end
     if not a.settings.enabled or d.Full then return d end
     add("BoxFill", "Square", {Thickness = 0, Filled = true})
     add("Distance", "Text", {Size = 10, Center = true, Outline = true, Color = Color3.new(0.8, 0.8, 0.8)})
@@ -167,8 +175,8 @@ end
 
 local function sync()
     local a, t = Visual.AdvancedESP, {}
-    for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
-        if p ~= Player and (a.settings.enabled or a.settings.name or ah and at[p]) then
+    for _, p in ipairs(players:GetPlayers()) do
+        if p ~= Player and (a.settings.enabled or a.settings.name or ultimateEnabled or ah and at[p]) then
             t[p] = true
             Visual.CreateAdvancedESP(p)
         end
@@ -202,7 +210,7 @@ end
 
 function Visual.UpdateAdvancedESP(dt)
     local settings = Visual.AdvancedESP.settings
-    if not settings.enabled and not settings.name and not ah then return end
+    if not settings.enabled and not settings.name and not ah and not ultimateEnabled then return end
     ae += dt or 0
     if ae >= 0.25 then
         ae = 0
@@ -230,18 +238,28 @@ function Visual.UpdateAdvancedESP(dt)
         end
         
         local char = plr.Character
+        local cached = characterCache[plr]
+        if not cached or cached.char ~= char then
+            cached = {char = char}
+            characterCache[plr] = cached
+        end
+        if char then
+            if not cached.root or not cached.root.Parent then cached.root = char:FindFirstChild("HumanoidRootPart") end
+            if not cached.head or not cached.head.Parent then cached.head = char:FindFirstChild("Head") end
+            if not cached.hum or not cached.hum.Parent then cached.hum = char:FindFirstChildOfClass("Humanoid") end
+        end
         local a = ah and at[plr]
         if a and a.char ~= char then a = nil end
-        if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Head") and char:FindFirstChildOfClass("Humanoid") then
-            local hum = char:FindFirstChildOfClass("Humanoid")
+        if char and cached.root and cached.head and cached.hum then
+            local hum = cached.hum
             
             if hum and hum.Health <= 0 then
                 Visual.HideAdvancedESP(plr)
                 continue
             end
             
-            local root = char.HumanoidRootPart
-            local head = char.Head
+            local root = cached.root
+            local head = cached.head
 
             local function screenPosOrNil(part)
                 if part then
@@ -297,6 +315,18 @@ function Visual.UpdateAdvancedESP(dt)
                     d.Name.Visible = settings.name or a ~= nil
                 end
 
+                if d.Ultimate then
+                    local maximum = tonumber(char:GetAttribute("MaxUltCharge"))
+                    local charge = tonumber(char:GetAttribute("UltCharge"))
+                    local valid = maximum and maximum > 0 and maximum < math.huge and charge and charge == charge
+                    d.Ultimate.Visible = ultimateEnabled and valid and true or false
+                    if d.Ultimate.Visible then
+                        local text = tostring(math.floor(math.clamp(charge / maximum, 0, 1) * 100 + 0.5)) .. "%"
+                        if d.Ultimate.Text ~= text then d.Ultimate.Text = text end
+                        d.Ultimate.Position = Vector2.new(headPos.X, y - (d.Name.Visible and (a and 51 or 39) or 20))
+                    end
+                end
+
                 if d.Distance then
                     local dist = math.floor((root.Position - camPos).Magnitude)
                     d.Distance.Text = dist .. "m"
@@ -317,7 +347,7 @@ function Visual.UpdateAdvancedESP(dt)
                     
                     if settings.healthbar and settings.enabled then
                         local HEALTH_STRIPES = 24
-                        local hpPerc = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                        local hpPerc = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
                         
                         for i = 1, HEALTH_STRIPES do
                             local stripe = d["HealthStripe"..i]
@@ -329,7 +359,7 @@ function Visual.UpdateAdvancedESP(dt)
                                 stripe.Color = stripeColor
                                 stripe.Position = Vector2.new(barX, stripeY)
                                 stripe.Size = Vector2.new(barWidth, stripeH)
-                                stripe.Visible = (i - 1) / HEALTH_STRIPES < hpPerc
+                                stripe.Visible = (HEALTH_STRIPES - i) / HEALTH_STRIPES < hpPerc
                             end
                         end
                         
@@ -347,7 +377,7 @@ function Visual.UpdateAdvancedESP(dt)
                     end
                 end
 
-                if d.Bones then
+                if d.Bones and settings.enabled and settings.bones then
                     local bonesVisible = settings.bones and settings.enabled
                     local bones
                     
@@ -397,6 +427,8 @@ function Visual.UpdateAdvancedESP(dt)
                             line.Visible = false
                         end
                     end
+                elseif d.Bones then
+                    for _, bone in pairs(d.Bones) do bone.Visible = false end
                 end
 
                 if d.Tracer then
@@ -421,24 +453,31 @@ function Visual.StopAdvancedESP()
     table.clear(a.connections)
     for p in pairs(a.espObjects) do Visual.DestroyAdvancedESP(p) end
     at, ae = {}, 0
+    renderElapsed = 0
+    table.clear(characterCache)
 end
 
 function Visual.Refresh()
     local a = Visual.AdvancedESP
-    if PrimeRuntime.IsShuttingDown or not (a.settings.enabled or a.settings.name or ah) then
+    if PrimeRuntime.IsShuttingDown or not (a.settings.enabled or a.settings.name or ah or ultimateEnabled) then
         Visual.StopAdvancedESP()
         return
     end
     local function step(dt)
+        renderElapsed += dt
+        local interval = IS_MOBILE and 1 / 30 or 1 / 60
+        if dt > 0 and renderElapsed < interval then return end
+        local elapsed = renderElapsed
+        renderElapsed = 0
         local ok, e = pcall(function()
             assert(Drawing and type(Drawing.new) == "function", "Drawing API unavailable")
-            Visual.UpdateAdvancedESP(dt)
+            Visual.UpdateAdvancedESP(elapsed)
         end)
         if not ok then
-            a.settings.enabled, a.settings.name, ah = false, false, false
+            a.settings.enabled, a.settings.name, ah, ultimateEnabled = false, false, false, false
             Visual.StopAdvancedESP()
             warn("[PRIME ESP] " .. tostring(e))
-            for _, n in ipairs({"AdvancedESP", "ESPNames", "ArtifactHolderESP"}) do
+            for _, n in ipairs({"AdvancedESP", "ESPNames", "ArtifactHolderESP", "UltimateChargeESP"}) do
                 local o = Options[n]
                 if o and o.Value then pcall(function() o:SetValue(false) end) end
             end
@@ -575,57 +614,13 @@ function Visual.SetTime(time)
     game:GetService("Lighting").ClockTime = time
 end
 
-local ue, uc, ut = {}, nil, 0
-
-local function clearUlt()
-    if uc then uc:Disconnect() uc = nil end
-    for p, v in pairs(ue) do v.gui:Destroy() ue[p] = nil end
-    ut = 0
-end
-
-local function updateUlt()
-    local t = {}
-    for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
-        local c = p.Character
-        local h = c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
-        local m = c and tonumber(c:GetAttribute("MaxUltCharge"))
-        if p ~= Player and h and m and m > 0 then
-            t[p] = true
-            local v = ue[p]
-            if not v then
-                local g = Instance.new("BillboardGui")
-                g.Name, g.AlwaysOnTop, g.Size = "PrimeUltimate", true, UDim2.fromOffset(180, 34)
-                g.StudsOffsetWorldSpace = Vector3.new(0, 2.7, 0)
-                g.Parent = Player:FindFirstChildOfClass("PlayerGui")
-                local l = Instance.new("TextLabel")
-                l.Size, l.BackgroundTransparency = UDim2.fromScale(1, 1), 1
-                l.Font, l.TextSize = Enum.Font.GothamBold, 14
-                l.TextColor3, l.TextStrokeTransparency = Color3.fromRGB(190, 85, 255), 0.15
-                l.Parent = g
-                v = {gui = g, label = l}
-                ue[p] = v
-            end
-            v.gui.Adornee = h
-            local n = tonumber(c:GetAttribute("UltCharge")) or 0
-            v.label.Text = string.format("%s  ULT %d%%", p.Name, math.floor(n / m * 100 + 0.5))
-        end
-    end
-    for p, v in pairs(ue) do
-        if not t[p] then v.gui:Destroy() ue[p] = nil end
-    end
-end
-
-local function toggleUlt(v)
-    clearUlt()
-    if not v then return end
-    updateUlt()
-    uc = game:GetService("RunService").Heartbeat:Connect(function(dt)
-        ut += dt
-        if ut >= 0.5 then ut = 0 updateUlt() end
-    end)
+local function toggleUlt(value)
+    ultimateEnabled = value == true
+    Visual.Refresh()
 end
 
 function Visual.Cleanup()
+    ultimateEnabled = false
     ah = false
     Visual.AdvancedESP.settings.enabled = false
     Visual.AdvancedESP.settings.name = false
@@ -747,7 +742,7 @@ do
     end)
     safeUI("UltimateChargeESP", function()
         local t = Tabs.ESP:AddToggle("UltimateChargeESP", {
-            Title = "Ultimate Charge ESP", Description = "Ultimate charge above players", Default = false
+            Title = "Ultimate Charge ESP", Description = "Drawing ultimate percentage above players", Default = false
         })
         t:OnChanged(toggleUlt)
     end)
@@ -848,5 +843,4 @@ end
 
 TrackRuntimeCleanup(function()
     Visual.Cleanup()
-    clearUlt()
 end)
