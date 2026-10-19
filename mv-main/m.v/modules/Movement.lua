@@ -33,6 +33,11 @@ local function toggleAntiFling(value)
         local character = Player.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
         local root = character and (character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart)
+        if PrimeRuntime.BossFarm and PrimeRuntime.BossFarm.Enabled then
+            antiFlingSafeCFrame = nil
+            antiFlingLastPosition = root and root.Position or nil
+            return
+        end
         if not root or not humanoid or humanoid.Health <= 0 or humanoid.SeatPart or character:GetAttribute("ApplyingFlightForce") then
             antiFlingLastPosition = root and root.Position or nil
             return
@@ -149,7 +154,6 @@ local function toggleNoclip(value)
 end
 local jumpPowerEnabled = false
 local jumpPowerValue = 50
--- Jump Power
 local originalJumpPower = nil
 local jumpPowerConnections = {}
 
@@ -242,7 +246,6 @@ local function toggleJumpPower(value)
 end
 local walkSpeedEnabled = false
 local walkSpeedValue = 50
--- Walk Speed
 local originalWalkSpeed = nil
 local walkSpeedConnections = {}
 
