@@ -399,6 +399,11 @@ local function acquireTargetLock()
 end
 
 local function getCombatTargetPart()
+    if PrimeRuntime.GetBossFarmTarget then
+        local _, root = PrimeRuntime.GetBossFarmTarget()
+        if root then return root end
+        if PrimeRuntime.BossFarm and PrimeRuntime.BossFarm.Enabled then return nil end
+    end
     if not targetLockEnabled then return getNearestEnemy() end
     if not targetIsValid(targetLockPart) then
         return acquireTargetLock()
