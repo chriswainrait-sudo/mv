@@ -1043,17 +1043,35 @@ do
     }
     local slots = {
         "Ability1", "Ability2", "Ability3", "Ability4", "Ability5", "Ultimate",
-        "DarkholdSpell_One", "DarkholdSpell_Two", "DarkholdSpell_Three", "Option1",
+        "DarkholdSpell_One", "DarkholdSpell_Two", "DarkholdSpell_Three",
+        "Option1", "Option2", "Option3",
     }
     local searchPositions = {
-        Vector3.new(-1034, 717, -1569),
-        Vector3.new(-1207, 717, -1740),
-        Vector3.new(-1216, 717, -1491),
-        Vector3.new(-1102, 717, -1387),
-        Vector3.new(-1060, 717, -1781),
         Vector3.new(-1052, 820, 325),
     }
-    local abilities, presets, network, system
+    local combatAbilities = {}
+    for _, name in ipairs({
+        "DarkBolt", "DarkBeam", "DarkWraith", "DarkCurse", "DarkChains",
+        "BinaryForm", "PhotonBlast", "PhotonBeam", "BinaryThrow",
+        "OpticalStrike", "OpticalUnleash", "OpticalBeam", "OpticalBlast",
+        "EldritchSlices", "EldritchLasso", "MirrorDimension", "IcyTendrilsOfIkthalon",
+        "GiantArrow", "ArrowShot", "GasArrow", "StunArrow",
+        "Flamethrow", "Fireball", "Supernova", "MeteorRain", "PowerBeam",
+        "BubbleFrisbee", "BubbleBlast", "BubbleMace",
+        "RepulsorBlast", "LaserSpin", "MissileLaunch",
+        "KineticStrike", "PhoenixStrike", "MentalInstability", "JG_Telekinesis",
+        "JG_Telekinesis_Push", "PhoenixPush", "ConsumingFlame",
+        "CosmicCombat", "CosmicBolt", "CosmicPunch",
+        "SpeedPunch", "SpeedPunche", "SpeedCarry", "SonicBoom", "SpeedCarryThrow", "SpeedAreaPunch",
+        "LightningBeam", "IcicleSpear", "Tornado",
+        "GodOfThunder", "Thor_LightningBeam", "LightningAura", "HammerThrow", "HammerSlam", "BifrostSlam",
+        "MindBeam", "MindBolt", "ChaosBarrage", "ChaosAbsorb", "ChaosDarkHex", "ChaosKinesis",
+        "SW_ChaosBeam", "ChaosTelekinesis", "ChaosBolt", "ChaosLift", "ChaosBoulderThrow",
+        "ChaosVault_Slam", "ChaosVault_SlamSW", "ChaosBeam", "ChaosReactionSlam",
+        "ChaosRockOutburst", "AOUWanda_AreaBlast",
+        "HexBeam", "HexHalt", "HexTrap", "TelepathicPull", "HexMark",
+    }) do combatAbilities[name] = true end
+    local abilities, presets, network, system, aimModule, targetModule
 
     local function getParts(character)
         if not character or not character.Parent then return end
@@ -1065,17 +1083,12 @@ do
     end
 
     local function available(model)
-        if typeof(model) ~= "Instance" or not model:IsA("Model")
+        if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Name ~= "Elderbeast"
             or not model:IsDescendantOf(workspace) or model == Player.Character
             or Players:GetPlayerFromCharacter(model)
             or not CollectionService:HasTag(model, "EnemyNPC") then return false end
         local humanoid, root = getParts(model)
         if not humanoid then return false end
-        for _, name in ipairs({"Untargetable", "Invisible"}) do
-            local value = model:GetAttribute(name)
-            if value == true or type(value) == "number" and value > 0
-                or CollectionService:HasTag(model, name) then return false end
-        end
         return true, root
     end
 
@@ -1098,6 +1111,8 @@ do
     local function resolveModules()
         abilities = abilities or getGameModule("Abilities")
         network = network or getGameModule("Network")
+        aimModule = aimModule or getGameModule("Aim")
+        targetModule = targetModule or getGameModule("Target")
         if not system then
             system = type(shared) == "table" and shared.System or nil
             if not system then
@@ -1121,6 +1136,7 @@ do
             and type(abilities.ActivateAbility) == "function"
             and type(abilities.DeactivateAbility) == "function"
             and type(system) == "table" and type(system.StoredFunctions) == "table"
+            and type(aimModule) == "table" and type(aimModule.GetAimPosition) == "function"
     end
 
     local function removeHooks()
@@ -1130,6 +1146,7 @@ do
             end
         end
         table.clear(state.Hooks)
+        if PrimeRuntime.SetBossFarmAim then PrimeRuntime.SetBossFarmAim(false) end
     end
 
     local function installHooks()
@@ -1138,12 +1155,25 @@ do
         for _, name in ipairs({"GetAimPosition", "GetTarget"}) do
             if type(registry[name]) ~= "function" then return false end
         end
-        for _, name in ipairs({"GetAimPosition", "GetTarget"}) do
-            local original = registry[name]
+        if PrimeRuntime.SetBossFarmAim then PrimeRuntime.SetBossFarmAim(true) end
+        local entries = {
+            {Registry = registry, Name = "GetAimPosition"},
+            {Registry = registry, Name = "GetTarget"},
+            {Registry = aimModule, Name = "GetAimPosition"},
+        }
+        if type(aimModule.GetRawAimPosition) == "function" then
+            table.insert(entries, {Registry = aimModule, Name = "GetRawAimPosition"})
+        end
+        if type(targetModule) == "table" and type(targetModule.GetTarget) == "function" then
+            table.insert(entries, {Registry = targetModule, Name = "GetTarget"})
+        end
+        for _, entry in ipairs(entries) do
+            local destination, name = entry.Registry, entry.Name
+            local original = destination[name]
             local wrapper = function(...)
                 local target, root = getTarget()
                 if target then
-                    if name == "GetAimPosition" then return root.Position end
+                    if name ~= "GetTarget" then return root.Position end
                     local range = select(1, ...)
                     local _, ownRoot = getParts(Player.Character)
                     if type(range) ~= "number" or (root.Position - ownRoot.Position).Magnitude <= range then
@@ -1154,8 +1184,8 @@ do
                 if state.Enabled and name == "GetTarget" then return nil end
                 return original(...)
             end
-            registry[name] = wrapper
-            table.insert(state.Hooks, {Registry = registry, Name = name, Original = original, Wrapper = wrapper})
+            destination[name] = wrapper
+            table.insert(state.Hooks, {Registry = destination, Name = name, Original = original, Wrapper = wrapper})
         end
         return true
     end
@@ -1204,7 +1234,7 @@ do
             end
         end
         state.Target = nearest
-        if nearest then state.NextCast = now + 0.2 return end
+        if nearest then state.NextCast = now + 0.05 return end
         if not workspace.StreamingEnabled or state.StreamBusy or now < state.NextStream then return end
         state.NextStream = now + 5
         state.StreamIndex = state.StreamIndex % #searchPositions + 1
@@ -1227,7 +1257,7 @@ do
             state.Cursor = state.Cursor % #slots + 1
             local ok, name, definition = pcall(abilities.GetAbilityNumInfo, slot)
             local folder = character:FindFirstChild("AbilityFolder")
-            if ok and type(name) == "string" and type(definition) == "table"
+            if ok and type(name) == "string" and combatAbilities[name] and type(definition) == "table"
                 and folder and folder:GetAttribute(slot) == name then
                 local preset = presets and presets[definition.AbilityPreset]
                 local function field(key)
@@ -1239,7 +1269,9 @@ do
                     or type(charge) == "number" and type(maximum) == "number" and charge >= maximum
                 local cooldownOK, cooldown = pcall(abilities.GetCooldownRemaining, name)
                 local range = tonumber(field("TargetRange")) or 100
-                if not field("Passive") and readyUltimate and cooldownOK
+                if not field("Passive") and field("AbilityPreset") ~= "Shield"
+                    and field("AbilityPreset") ~= "Flight" and field("AbilityPreset") ~= "Sprint"
+                    and readyUltimate and cooldownOK
                     and (cooldown == nil or type(cooldown) == "number" and cooldown <= 0)
                     and (not field("TargetRequired") or (targetRoot.Position - root.Position).Magnitude <= range) then
                     local cast = {
@@ -1253,7 +1285,7 @@ do
                         NextRelease = 0,
                     }
                     state.Cast = cast
-                    state.NextCast = now + 0.3
+                    state.NextCast = now + 0.05
                     local generation = state.Generation
                     task.spawn(function()
                         if state.Enabled and state.Generation == generation
@@ -1270,7 +1302,7 @@ do
                 end
             end
         end
-        state.NextCast = now + 0.2
+        state.NextCast = now + 0.05
     end
 
     local function step(now)
@@ -1281,7 +1313,7 @@ do
             endCast()
             state.Character = character
             state.Cursor = 1
-            state.NextCast = now + 0.5
+            state.NextCast = now + 0.2
         end
         local humanoid, root = getParts(character)
         if not humanoid or Player:GetAttribute("SelectingCharacter") then
@@ -1309,12 +1341,11 @@ do
         if cast then
             if cast.Finished then
                 state.Cast = nil
-                state.NextCast = math.max(state.NextCast, now + 0.15)
             elseif cast.CanDeactivate and now >= cast.ReleaseAt and now >= cast.NextRelease then
                 cast.NextRelease = now + 0.5
                 pcall(abilities.DeactivateAbility, cast.Name)
             end
-            return
+            if state.Cast then return end
         end
         nextAbility(character, root, targetRoot, now)
     end
@@ -1348,7 +1379,7 @@ do
         rememberCharacter(Player.Character)
         state.Connection = RunService.Heartbeat:Connect(function(dt)
             state.Elapsed = state.Elapsed + dt
-            if state.Elapsed < 0.1 then return end
+            if state.Elapsed < 0.05 then return end
             state.Elapsed = 0
             local ok, err = pcall(step, os.clock())
             if not ok then
@@ -1365,7 +1396,7 @@ do
     PrimeRuntime.BossFarm = state
     local toggle = Tabs.Main:AddToggle("BossFarmToggle", {
         Title = "Boss Farm",
-        Description = "Teleport to bosses, cycle ready abilities and rejoin combat after respawn",
+        Description = "Farm Elderbeast with built-in Silent Aim and repeat ready attack abilities",
         Default = false,
     })
     toggle:OnChanged(function() setEnabled(Options.BossFarmToggle.Value) end)
