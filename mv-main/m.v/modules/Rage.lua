@@ -472,6 +472,7 @@ local function restoreSilentAimHook()
 end
 
 local function installSilentAimHook()
+    if PrimeRuntime.BossFarm and PrimeRuntime.BossFarm.Enabled then return true end
     if silentAimHookMode then return true end
 
     local Aim = getAimModule()
@@ -521,6 +522,14 @@ local function installSilentAimHook()
     silentAimWrapper = Wrapper
     silentAimHookMode = "table"
     return true
+end
+
+PrimeRuntime.SetBossFarmAim = function(enabled)
+    if enabled then
+        restoreSilentAimHook()
+    elseif silentAimEnabled and not PrimeRuntime.IsShuttingDown then
+        installSilentAimHook()
+    end
 end
 
 local function enableSilentAim()
