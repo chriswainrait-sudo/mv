@@ -41,10 +41,19 @@ end
 local Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/chriswainrait-sudo/PrimeLibrary-/refs/heads/main/.lua"))()
 local uiPlayer = game:GetService("Players").LocalPlayer
 assert(uiPlayer, "Marvel Omega: LocalPlayer unavailable")
-local uiParent = uiPlayer:WaitForChild("PlayerGui", 15)
-assert(uiParent, "Marvel Omega: PlayerGui unavailable")
 assert(Fluent.GUI, "Marvel Omega: library does not expose GUI")
-Fluent.GUI.Parent = uiParent
+local uiParent
+if type(gethui) == "function" then
+    local ok, parent = pcall(gethui)
+    if ok and typeof(parent) == "Instance" and parent ~= uiPlayer
+        and not parent:IsDescendantOf(game:GetService("Players")) then uiParent = parent end
+end
+local uiAttached = uiParent and pcall(function() Fluent.GUI.Parent = uiParent end)
+if not uiAttached then
+    uiParent = game:GetService("CoreGui")
+    uiAttached = pcall(function() Fluent.GUI.Parent = uiParent end)
+end
+assert(uiAttached, "Marvel Omega: GUI parent unavailable")
 Fluent.GUI.ResetOnSpawn = false
 
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/chriswainrait-sudo/SaveManager/refs/heads/main/.lua"))()
