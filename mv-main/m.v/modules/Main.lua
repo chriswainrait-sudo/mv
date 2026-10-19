@@ -110,6 +110,9 @@ local function setupAutomaticStoneCollection()
 end
 
 local function toggleAutomaticStoneCollection(value)
+    if value and Options.BossFarmToggle and Options.BossFarmToggle.Value then
+        Options.BossFarmToggle:SetValue(false)
+    end
     automaticStoneCollectionEnabled = value
 
     if automaticStoneCollectionEnabled then
@@ -306,6 +309,9 @@ local function setupAutoCollect()
 end
 
 local function toggleAutoCollect(value)
+    if value and Options.BossFarmToggle and Options.BossFarmToggle.Value then
+        Options.BossFarmToggle:SetValue(false)
+    end
     autoCollectEnabled = value
     
     if autoCollectEnabled then
@@ -505,6 +511,9 @@ local function setupAutoFarm()
 end
 
 local function toggleAutoFarm(value)
+    if value and Options.BossFarmToggle and Options.BossFarmToggle.Value then
+        Options.BossFarmToggle:SetValue(false)
+    end
     autoFarmEnabled = value
 
     if value then
@@ -1006,3 +1015,372 @@ TrackRuntimeCleanup(function()
     toggleESPStones(false)
     toggleESPBoxes(false)
 end)
+
+do
+    local Players = game:GetService("Players")
+    local CollectionService = game:GetService("CollectionService")
+    local RunService = game:GetService("RunService")
+    local state = {
+        Enabled = false,
+        Generation = 0,
+        Cursor = 1,
+        Elapsed = 0,
+        NextCast = 0,
+        NextSearch = 0,
+        NextRespawn = 0,
+        NextStream = 0,
+        StreamIndex = 0,
+        StreamBusy = false,
+        RespawnBusy = false,
+        Distance = 8,
+        Character = nil,
+        CharacterName = nil,
+        SkinName = "Default",
+        Target = nil,
+        Cast = nil,
+        Connection = nil,
+        Hooks = {},
+    }
+    local slots = {
+        "Ability1", "Ability2", "Ability3", "Ability4", "Ability5", "Ultimate",
+        "DarkholdSpell_One", "DarkholdSpell_Two", "DarkholdSpell_Three", "Option1",
+    }
+    local searchPositions = {
+        Vector3.new(-1034, 717, -1569),
+        Vector3.new(-1207, 717, -1740),
+        Vector3.new(-1216, 717, -1491),
+        Vector3.new(-1102, 717, -1387),
+        Vector3.new(-1060, 717, -1781),
+        Vector3.new(-1052, 820, 325),
+    }
+    local abilities, presets, network, system
+
+    local function getParts(character)
+        if not character or not character.Parent then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local root = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+        if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+            return humanoid, root
+        end
+    end
+
+    local function available(model)
+        if typeof(model) ~= "Instance" or not model:IsA("Model")
+            or not model:IsDescendantOf(workspace) or model == Player.Character
+            or Players:GetPlayerFromCharacter(model)
+            or not CollectionService:HasTag(model, "EnemyNPC") then return false end
+        local humanoid, root = getParts(model)
+        if not humanoid then return false end
+        for _, name in ipairs({"Untargetable", "Invisible"}) do
+            local value = model:GetAttribute(name)
+            if value == true or type(value) == "number" and value > 0
+                or CollectionService:HasTag(model, name) then return false end
+        end
+        return true, root
+    end
+
+    local function getTarget()
+        if not state.Enabled or not getParts(Player.Character)
+            or Player:GetAttribute("SelectingCharacter") then return end
+        local valid, root = available(state.Target)
+        if valid then return state.Target, root end
+    end
+
+    local function rememberCharacter(character)
+        if not character then return end
+        local name = character:GetAttribute("CharacterName")
+        if type(name) == "string" and name ~= "" then
+            state.CharacterName = name
+            state.SkinName = character:GetAttribute("SkinName") or "Default"
+        end
+    end
+
+    local function resolveModules()
+        abilities = abilities or getGameModule("Abilities")
+        network = network or getGameModule("Network")
+        if not system then
+            system = type(shared) == "table" and shared.System or nil
+            if not system then
+                local module = game:GetService("ReplicatedFirst"):FindFirstChild("System")
+                if module then
+                    local ok, result = pcall(require, module)
+                    if ok then system = result end
+                end
+            end
+        end
+        if not presets then
+            local folder = game:GetService("ReplicatedStorage"):FindFirstChild("Abilities_Client")
+            local module = folder and folder:FindFirstChild("Presets")
+            if module then
+                local ok, result = pcall(require, module)
+                if ok then presets = result end
+            end
+        end
+        return type(abilities) == "table" and type(abilities.GetAbilityNumInfo) == "function"
+            and type(abilities.GetCooldownRemaining) == "function"
+            and type(abilities.ActivateAbility) == "function"
+            and type(abilities.DeactivateAbility) == "function"
+            and type(system) == "table" and type(system.StoredFunctions) == "table"
+    end
+
+    local function removeHooks()
+        for _, hook in ipairs(state.Hooks) do
+            if hook.Registry[hook.Name] == hook.Wrapper then
+                hook.Registry[hook.Name] = hook.Original
+            end
+        end
+        table.clear(state.Hooks)
+    end
+
+    local function installHooks()
+        if #state.Hooks > 0 then return true end
+        local registry = system.StoredFunctions
+        for _, name in ipairs({"GetAimPosition", "GetTarget"}) do
+            if type(registry[name]) ~= "function" then return false end
+        end
+        for _, name in ipairs({"GetAimPosition", "GetTarget"}) do
+            local original = registry[name]
+            local wrapper = function(...)
+                local target, root = getTarget()
+                if target then
+                    if name == "GetAimPosition" then return root.Position end
+                    local range = select(1, ...)
+                    local _, ownRoot = getParts(Player.Character)
+                    if type(range) ~= "number" or (root.Position - ownRoot.Position).Magnitude <= range then
+                        return target
+                    end
+                    return nil
+                end
+                if state.Enabled and name == "GetTarget" then return nil end
+                return original(...)
+            end
+            registry[name] = wrapper
+            table.insert(state.Hooks, {Registry = registry, Name = name, Original = original, Wrapper = wrapper})
+        end
+        return true
+    end
+
+    local function endCast()
+        local cast = state.Cast
+        state.Cast = nil
+        if cast and not cast.Finished and cast.Character == Player.Character and abilities then
+            pcall(abilities.DeactivateAbility, cast.Name)
+        end
+    end
+
+    local function requestRespawn(now)
+        if not state.CharacterName or state.RespawnBusy or now < state.NextRespawn
+            or Player:GetAttribute("SelectingCharacter") ~= true then return end
+        state.NextRespawn = now + 5
+        local invoke = network and network.InvokeServer
+        if type(invoke) ~= "function" and type(network) == "table" then
+            for key, callback in pairs(network) do
+                if type(key) == "string" and key:find("InvokeServer", 1, true)
+                    and type(callback) == "function" then invoke = callback break end
+            end
+        end
+        if type(invoke) ~= "function" then return end
+        state.RespawnBusy = true
+        local generation = state.Generation
+        local name, skin = state.CharacterName, state.SkinName
+        task.spawn(function()
+            if state.Enabled and state.Generation == generation
+                and Player:GetAttribute("SelectingCharacter") == true then
+                pcall(invoke, "RequestCharacter", name, skin)
+            end
+            state.RespawnBusy = false
+        end)
+    end
+
+    local function findBoss(root, now)
+        if now < state.NextSearch then return end
+        state.NextSearch = now + 0.5
+        local nearest, distance
+        for _, model in ipairs(CollectionService:GetTagged("EnemyNPC")) do
+            local valid, targetRoot = available(model)
+            if valid then
+                local current = (targetRoot.Position - root.Position).Magnitude
+                if not distance or current < distance then nearest, distance = model, current end
+            end
+        end
+        state.Target = nearest
+        if nearest then state.NextCast = now + 0.2 return end
+        if not workspace.StreamingEnabled or state.StreamBusy or now < state.NextStream then return end
+        state.NextStream = now + 5
+        state.StreamIndex = state.StreamIndex % #searchPositions + 1
+        local position = searchPositions[state.StreamIndex]
+        local generation = state.Generation
+        state.StreamBusy = true
+        task.spawn(function()
+            if state.Enabled and state.Generation == generation then
+                pcall(Player.RequestStreamAroundAsync, Player, position, 3)
+            end
+            state.StreamBusy = false
+        end)
+    end
+
+    local function nextAbility(character, root, targetRoot, now)
+        if now < state.NextCast or Player:GetAttribute("CanUseAbilities") ~= true
+            or character:GetAttribute("Stuns") then return end
+        for _ = 1, #slots do
+            local slot = slots[state.Cursor]
+            state.Cursor = state.Cursor % #slots + 1
+            local ok, name, definition = pcall(abilities.GetAbilityNumInfo, slot)
+            local folder = character:FindFirstChild("AbilityFolder")
+            if ok and type(name) == "string" and type(definition) == "table"
+                and folder and folder:GetAttribute(slot) == name then
+                local preset = presets and presets[definition.AbilityPreset]
+                local function field(key)
+                    if definition[key] ~= nil then return definition[key] end
+                    return preset and preset[key]
+                end
+                local charge, maximum = character:GetAttribute("UltCharge"), character:GetAttribute("MaxUltCharge")
+                local readyUltimate = not field("Ultimate")
+                    or type(charge) == "number" and type(maximum) == "number" and charge >= maximum
+                local cooldownOK, cooldown = pcall(abilities.GetCooldownRemaining, name)
+                local range = tonumber(field("TargetRange")) or 100
+                if not field("Passive") and readyUltimate and cooldownOK
+                    and (cooldown == nil or type(cooldown) == "number" and cooldown <= 0)
+                    and (not field("TargetRequired") or (targetRoot.Position - root.Position).Magnitude <= range) then
+                    local cast = {
+                        Name = name,
+                        Character = character,
+                        StartedAt = now,
+                        Finished = false,
+                        ReleaseAt = now + math.clamp(tonumber(field("AimDuration"))
+                            or tonumber(field("MaxActivationTime")) or 3, 0.4, 8),
+                        CanDeactivate = field("CanDeactivate") == true,
+                        NextRelease = 0,
+                    }
+                    state.Cast = cast
+                    state.NextCast = now + 0.3
+                    local generation = state.Generation
+                    task.spawn(function()
+                        if state.Enabled and state.Generation == generation
+                            and Player.Character == character and getTarget() then
+                            local success, result = pcall(abilities.ActivateAbility, name)
+                            if not success then
+                                cast.Error = tostring(result)
+                                state.LastError = cast.Error
+                            end
+                        end
+                        cast.Finished = true
+                    end)
+                    return
+                end
+            end
+        end
+        state.NextCast = now + 0.2
+    end
+
+    local function step(now)
+        if not state.Enabled or PrimeRuntime.IsShuttingDown then return end
+        local character = Player.Character
+        rememberCharacter(character)
+        if character ~= state.Character then
+            endCast()
+            state.Character = character
+            state.Cursor = 1
+            state.NextCast = now + 0.5
+        end
+        local humanoid, root = getParts(character)
+        if not humanoid or Player:GetAttribute("SelectingCharacter") then
+            endCast()
+            requestRespawn(now)
+            return
+        end
+        if not available(state.Target) then
+            endCast()
+            state.Target = nil
+            findBoss(root, now)
+        end
+        local target, targetRoot = getTarget()
+        if not target then return end
+        local desired = targetRoot.Position - targetRoot.CFrame.LookVector * state.Distance
+        if (root.Position - desired).Magnitude > 2.5 and not character:GetAttribute("Stuns") then
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+            root.CFrame = CFrame.lookAt(desired, targetRoot.Position)
+        end
+        character:SetAttribute("AimPosition", targetRoot.Position)
+        local direction = targetRoot.Position - root.Position
+        if direction.Magnitude > 0.01 then character:SetAttribute("LookDirection", direction.Unit) end
+        local cast = state.Cast
+        if cast then
+            if cast.Finished then
+                state.Cast = nil
+                state.NextCast = math.max(state.NextCast, now + 0.15)
+            elseif cast.CanDeactivate and now >= cast.ReleaseAt and now >= cast.NextRelease then
+                cast.NextRelease = now + 0.5
+                pcall(abilities.DeactivateAbility, cast.Name)
+            end
+            return
+        end
+        nextAbility(character, root, targetRoot, now)
+    end
+
+    local function setEnabled(value)
+        value = value == true
+        if value == state.Enabled then return end
+        state.Generation = state.Generation + 1
+        if not value then
+            state.Enabled = false
+            if state.Connection then state.Connection:Disconnect() state.Connection = nil end
+            endCast()
+            removeHooks()
+            state.Target, state.Character = nil, nil
+            return
+        end
+        if not resolveModules() or not installHooks() then
+            removeHooks()
+            Notify({Title = "Boss Farm", Content = "Game abilities are not ready. Try again after spawning.", Duration = 5})
+            local option = Options.BossFarmToggle
+            if option and option.Value then option:SetValue(false) end
+            return
+        end
+        for _, name in ipairs({"AutomaticStoneCollectionToggle", "AutoCollectToggle", "AutoFarmToggle"}) do
+            local option = Options[name]
+            if option and option.Value then option:SetValue(false) end
+        end
+        state.Enabled = true
+        state.Cursor, state.Elapsed = 1, 0
+        state.NextCast, state.NextSearch, state.NextRespawn, state.NextStream = 0, 0, os.clock() + 2, 0
+        rememberCharacter(Player.Character)
+        state.Connection = RunService.Heartbeat:Connect(function(dt)
+            state.Elapsed = state.Elapsed + dt
+            if state.Elapsed < 0.1 then return end
+            state.Elapsed = 0
+            local ok, err = pcall(step, os.clock())
+            if not ok then
+                state.LastError = tostring(err)
+                setEnabled(false)
+                local option = Options.BossFarmToggle
+                if option and option.Value then option:SetValue(false) end
+                Notify({Title = "Boss Farm", Content = tostring(err), Duration = 5})
+            end
+        end)
+    end
+
+    PrimeRuntime.GetBossFarmTarget = getTarget
+    PrimeRuntime.BossFarm = state
+    local toggle = Tabs.Main:AddToggle("BossFarmToggle", {
+        Title = "Boss Farm",
+        Description = "Teleport to bosses, cycle ready abilities and rejoin combat after respawn",
+        Default = false,
+    })
+    toggle:OnChanged(function() setEnabled(Options.BossFarmToggle.Value) end)
+    Tabs.Main:AddSlider("BossFarmDistance", {
+        Title = "Boss Distance",
+        Description = "Distance behind the current boss",
+        Default = 8,
+        Min = 3,
+        Max = 30,
+        Rounding = 0,
+        Callback = function(value) state.Distance = math.clamp(tonumber(value) or 8, 3, 30) end,
+    })
+    TrackRuntimeCleanup(function()
+        setEnabled(false)
+        if PrimeRuntime.GetBossFarmTarget == getTarget then PrimeRuntime.GetBossFarmTarget = nil end
+        if PrimeRuntime.BossFarm == state then PrimeRuntime.BossFarm = nil end
+    end)
+end
