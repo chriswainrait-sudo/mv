@@ -15,8 +15,23 @@ local PrimeRuntime = {
 }
 PRIME_ENV[PRIME_RUNTIME_KEY] = PrimeRuntime
 PrimeRuntime.Errors = {}
+local readThreadIdentity = getthreadidentity or getidentity
+local writeThreadIdentity = setthreadidentity or setidentity
+function PrimeRuntime.Protect(callback, ...)
+    local identity
+    if type(readThreadIdentity) == "function" and type(writeThreadIdentity) == "function" then
+        local ok, current = pcall(readThreadIdentity)
+        if ok then identity = current end
+    end
+    local result = table.pack(pcall(callback, ...))
+    if identity ~= nil then
+        local restored, failure = pcall(writeThreadIdentity, identity)
+        if not restored then return false, "Context restore failed: " .. tostring(failure) end
+    end
+    return table.unpack(result, 1, result.n)
+end
 function PrimeRuntime.Run(n, f)
-    local ok, e = xpcall(f, function(e) return debug.traceback(tostring(e), 2) end)
+    local ok, e = PrimeRuntime.Protect(f)
     if not ok then
         table.insert(PrimeRuntime.Errors, n .. ": " .. tostring(e))
         warn("mv/" .. n .. ": " .. tostring(e))
@@ -182,11 +197,11 @@ function Clamp(value, min, max)
     return value
 end
 
--- Fonts: wide techno face for titles, clean geometric face for everything else.
+                                                                                
 local FONT_BODY = "rbxasset://fonts/families/TitilliumWeb.json"
 local FONT_TITLE = "rbxasset://fonts/families/Michroma.json"
 
--- Window background gradient (top-left light -> bottom-right deep black).
+                                                                          
 local function windowGradient()
     local g = Instance.new("UIGradient")
     g.Color = ColorSequence.new({
@@ -12381,7 +12396,7 @@ local function createAutumnLeaves(mainFrame, innerClip, screenGui)
     return {SetEnabled = setEnabled, Destroy = destroy}
 end
 
--- Silver border that fades from the top-left corner.
+                                                     
 local function borderGradient()
     local g = Instance.new("UIGradient")
     g.Color = ColorSequence.new({
@@ -12393,9 +12408,9 @@ local function borderGradient()
     return g
 end
 
--- Whole GUI uses Michroma, max size 11, uppercase. Applied automatically to every
--- text object under a styled root, including text that changes later.
--- Objects with the "KeepFont" attribute (and pure symbols like ✓ › ◢) are left alone.
+                                                                                  
+                                                                      
+                                                                                      
 local TEXT_FONT = Font.new(FONT_TITLE, Enum.FontWeight.Regular, Enum.FontStyle.Normal)
 local TEXT_MAX_SIZE = 11
 
@@ -16000,7 +16015,7 @@ function NexusUI:CreateWindow(options)
     innerCorner.CornerRadius = UDim.new(0, 0)
     innerCorner.Parent = innerClip
 
-    -- Soft light sheen across the top-left, like a glass panel.
+                                                                
     local sheen = Instance.new("Frame")
     sheen.Name = "Sheen"
     sheen.Size = UDim2.fromScale(1, 1)
@@ -16075,7 +16090,7 @@ function NexusUI:CreateWindow(options)
     topBarCorner.CornerRadius = UDim.new(0, 0)
     topBarCorner.Parent = topBar
 
-    -- Hairline divider that fades out toward both edges.
+                                                         
     local topBarDivider = Instance.new("Frame")
     topBarDivider.Size = UDim2.new(1, -28, 0, 1)
     topBarDivider.Position = UDim2.new(0, 14, 1, -1)
@@ -16523,7 +16538,7 @@ function NexusUI:CreateWindow(options)
 
     track(dragHandle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            -- On phones the top tabs must keep the touch gesture for horizontal scrolling.
+                                                                                           
             if IS_MOBILE and isInputInside(tabStrip, input.Position) then
                 return
             end
@@ -16769,7 +16784,7 @@ function NexusUI:CreateWindow(options)
         tabUnderlineCorner.CornerRadius = UDim.new(0, 0)
         tabUnderlineCorner.Parent = tabUnderline
 
-        -- Small green superscript badge, e.g. "NEW" on recently updated tabs.
+                                                                              
         if tabData and tabData.Badge then
             tabButtonPadding.PaddingRight = UDim.new(0, 30)
             local badge = Instance.new("TextLabel")
@@ -16878,7 +16893,7 @@ function NexusUI:CreateWindow(options)
             groupLayout.SortOrder = Enum.SortOrder.LayoutOrder
             groupLayout.Parent = group
 
-            -- Plain section title with a fading hairline under it (no panel, not collapsible).
+                                                                                               
             local header = Instance.new("Frame")
             header.Size = UDim2.new(1, 0, 0, 30)
             header.BackgroundTransparency = 1
@@ -16962,7 +16977,7 @@ function NexusUI:CreateWindow(options)
             toggleFrame.BorderSizePixel = 0
             toggleFrame.Parent = getControlParent()
 
-            -- ON / OFF pill switch on the right side of the row.
+                                                                 
             local SWITCH_W = IS_MOBILE and 50 or 44
             local SWITCH_H = IS_MOBILE and 22 or 20
             local KNOB = SWITCH_H - 6
@@ -17133,7 +17148,7 @@ function NexusUI:CreateWindow(options)
 
             function toggleOption:SetTitle(text)
                 local newTitle = tostring(text or "")
-                -- Drop any bracketed suffix such as a "[LOCK 03:59:59]" countdown.
+                                                                                   
                 newTitle = newTitle:gsub("%s*%[.-%]%s*$", "")
                 if newTitle == "" then
                     newTitle = tostring(id)
@@ -17150,8 +17165,8 @@ function NexusUI:CreateWindow(options)
                 end
             end
 
-            -- Locking is disabled: toggles always stay usable. Kept as no-ops so
-            -- external callers (e.g. the loader) do not error.
+                                                                                 
+                                                               
             function toggleOption:SetLocked(value) end
 
             function toggleOption:SetLockedText(text) end
@@ -17163,8 +17178,8 @@ function NexusUI:CreateWindow(options)
             NexusUI.Options[id] = toggleOption
             NexusUI.Toggles[id] = toggleOption
 
-            -- A full-row TextButton is a native click/touch target: works with mouse on PC
-            -- and tap on phones (Activated fires for both).
+                                                                                           
+                                                            
             local rowHitbox = Instance.new("TextButton")
             rowHitbox.Name = "TouchHitbox"
             rowHitbox.Size = UDim2.fromScale(1, 1)
@@ -17269,7 +17284,7 @@ function NexusUI:CreateWindow(options)
                 return math.floor(v + 0.5)
             end
 
-            -- Persistent slider object so configs can read and restore its value.
+                                                                                  
             local sliderOption = {Value = value, IsSlider = true}
 
             local refresh
@@ -18161,9 +18176,9 @@ TrackGuiConnection(keybindBadge.MouseLeave:Connect(function()
         }):Play()
     end
 end))
-end -- desktop-only Settings UI
+end                            
 
--- Configs: save / load / overwrite / rename / delete every toggle, slider and dropdown.
+                                                                                        
 do
     local HttpService = game:GetService("HttpService")
     local CONFIG_ROOT = "PRIME/MarvelOmega"
@@ -18278,7 +18293,7 @@ do
             end
         end
 
-        -- Toggles last so features start with the restored slider/dropdown values.
+                                                                                   
         for id, value in pairs(type(data.Toggles) == "table" and data.Toggles or {}) do
             local option = NexusUI.Toggles[id]
             if type(option) == "table" and option.Value ~= (value == true) then
@@ -18315,7 +18330,7 @@ do
 
     local ConfigSection = Tabs.Settings:AddSection("Configs")
 
-    -- Config name input
+                        
     local nameRow = Instance.new("Frame")
     nameRow.Size = UDim2.new(1, 0, 0, 38)
     NexusUI:BindColor(nameRow, "BackgroundColor3", function() return COLOR_CONTROL end)
@@ -18517,8 +18532,14 @@ local function bindMarvelControls(tab)
             local listeners, adapted = {}, {}
             for key, value in pairs(data) do adapted[key] = value end
             adapted.Callback = function(value)
-                if data.Callback then data.Callback(value) end
-                for _, callback in ipairs(listeners) do callback(value) end
+                if data.Callback then
+                    local ok, failure = PrimeRuntime.Protect(data.Callback, value)
+                    if not ok then error(failure, 0) end
+                end
+                for _, callback in ipairs(listeners) do
+                    local ok, failure = PrimeRuntime.Protect(callback, value)
+                    if not ok then error(failure, 0) end
+                end
             end
             local control = native(self, id, adapted)
             local option = Options[id]
@@ -18544,7 +18565,7 @@ local function getGameModule(name)
     if not scriptObject or not scriptObject:IsA("ModuleScript") then
         return nil
     end
-    local ok, result = pcall(require, scriptObject)
+    local ok, result = PrimeRuntime.Protect(require, scriptObject)
     return ok and result or nil
 end
 
@@ -18553,5 +18574,5 @@ local function simulateAction(action, state)
     if not PlayerInputModule or type(PlayerInputModule.SimulateActionState) ~= "function" then
         return false
     end
-    return pcall(PlayerInputModule.SimulateActionState, PlayerInputModule, action, state)
+    return PrimeRuntime.Protect(PlayerInputModule.SimulateActionState, PlayerInputModule, action, state)
 end
