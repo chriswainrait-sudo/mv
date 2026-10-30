@@ -1,12 +1,11 @@
 local function safeUI(label, fn)
-    local ok, err = pcall(fn)
-    if not ok then
-        warn("Marvel Omega [Movement/" .. label .. "]: " .. tostring(err))
-    end
+    return PrimeRuntime.Run("Movement/" .. tostring(label), fn)
 end
 
 local alwaysSprintEnabled = false
 local function toggleAlwaysSprint(value)
+    value = value == true
+    if alwaysSprintEnabled == value then return end
     alwaysSprintEnabled = value
     simulateAction("Sprint", value)
 end
