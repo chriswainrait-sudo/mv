@@ -868,6 +868,22 @@ local function getCharacterArtifacts(character, darkholdOwner)
     return names, primaryColor
 end
 
+function PrimeRuntime.CharacterHasStone(character)
+    local folder = character and character:FindFirstChild("AbilityFolder")
+    if folder then
+        for _, name in pairs(folder:GetAttributes()) do
+            if name == "MeteorRain" or name == "PowerBeam" or name == "TimeStoneRewind" then return true end
+        end
+    end
+    if character then
+        for _, object in ipairs(character:GetDescendants()) do
+            local kind = object:GetAttribute("Type")
+            if kind == "InfinityStone" or kind == "TimeStone" then return true end
+        end
+    end
+    return false
+end
+
 function PrimeRuntime.GetArtifactHolders()
     local t, o = {}, getDarkholdOwner()
     for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
@@ -1413,5 +1429,335 @@ do
         setEnabled(false)
         if PrimeRuntime.GetBossFarmTarget == getTarget then PrimeRuntime.GetBossFarmTarget = nil end
         if PrimeRuntime.BossFarm == state then PrimeRuntime.BossFarm = nil end
+    end)
+end
+
+do
+    local settings = PrimeRuntime.SilentAimSettings
+    local players = game:GetService("Players")
+    local function changed()
+        if PrimeRuntime.ResetCombatTarget then PrimeRuntime.ResetCombatTarget() end
+    end
+    Tabs.Main:AddSection("Silent Aim Filters")
+    Tabs.Main:AddDropdown("SilentAimPriority", {Title = "Target Priority",
+        Values = {"Nearest", "Lowest Health", "Stone Holders", "Stones + Low Health", "Low Health + Stones"},
+        Default = "Nearest", Callback = function(value) settings.Priority = value; changed() end})
+    local function names()
+        local values, seen = {}, {}
+        for _, player in ipairs(players:GetPlayers()) do if player ~= Player then seen[player.Name] = true end end
+        for name in pairs(settings.Preferred) do seen[name] = true end
+        for name in pairs(settings.Ignored) do seen[name] = true end
+        for name in pairs(seen) do values[#values + 1] = name end
+        table.sort(values)
+        return values
+    end
+    local preferred = Tabs.Main:AddDropdown("SilentAimPriorityPlayers", {Title = "Priority Players", Multi = true,
+        Values = names(), Default = {}, Callback = function(value) settings.Preferred = value; changed() end})
+    local ignored = Tabs.Main:AddDropdown("SilentAimIgnorePlayers", {Title = "Ignore Players", Multi = true,
+        Values = names(), Default = {}, Callback = function(value) settings.Ignored = value; changed() end})
+    for index = 1, 5 do
+        local slot = "Ability" .. index
+        Tabs.Main:AddToggle("SilentAimIgnore" .. slot, {Title = "Ignore Ability " .. index, Default = false,
+            Callback = function(value) settings.IgnoredAbilities[slot] = value or nil end})
+    end
+    local function refresh()
+        if PrimeRuntime.IsShuttingDown then return end
+        local values = names()
+        preferred:SetValues(values); ignored:SetValues(values)
+    end
+    TrackRuntimeConnection(players.PlayerAdded:Connect(refresh))
+    TrackRuntimeConnection(players.PlayerRemoving:Connect(function() task.defer(refresh) end))
+end
+do
+    local storage = game:GetService("ReplicatedStorage")
+    local players = game:GetService("Players")
+    local catalog, heroes, definitions = {}, {}, {}
+    local state = {Hero = "JeanGrey", Skin = "Default", Effects = false, Appearance = false, Epoch = 0,
+        Objects = {}, Hidden = {}, Removed = {}, EffectCount = 0, AppearanceApplied = false}
+    local characterConnections, skinDropdown, status = {}, nil, nil
+    local dataFolder = storage:FindFirstChild("CharacterData")
+    if dataFolder then
+        for _, module in ipairs(dataFolder:GetChildren()) do
+            if module:IsA("ModuleScript") then
+                local ok, data = PrimeRuntime.Protect(require, module)
+                if ok and type(data) == "table" and type(data.Skins) == "table" then
+                    catalog[module.Name] = data
+                    heroes[#heroes + 1] = module.Name
+                end
+            end
+        end
+    end
+    table.sort(heroes)
+    if not catalog[state.Hero] then state.Hero = heroes[1] end
+    local function skinNames(hero)
+        local result = {}
+        for name in pairs(catalog[hero] and catalog[hero].Skins or {}) do result[#result + 1] = name end
+        table.sort(result, function(a, b) if a == b then return false elseif a == "Default" then return true elseif b == "Default" then return false end; return a < b end)
+        return result
+    end
+    local function clear()
+        for _, object in ipairs(state.Objects) do pcall(object.Destroy, object) end
+        table.clear(state.Objects)
+        for object, properties in pairs(state.Hidden) do
+            for key, value in pairs(properties) do pcall(function() object[key] = value end) end
+        end
+        table.clear(state.Hidden)
+        for _, record in ipairs(state.Removed) do
+            pcall(function() if record.Parent.Parent then record.Object.Parent = record.Parent else record.Object:Destroy() end end)
+        end
+        table.clear(state.Removed)
+        state.EffectCount, state.AppearanceApplied = 0, false
+    end
+    local function remember(object, key, value)
+        local ok, original = pcall(function() return object[key] end)
+        if not ok then return end
+        local properties = state.Hidden[object]
+        if not properties then properties = {}; state.Hidden[object] = properties end
+        if properties[key] == nil then properties[key] = original end
+        pcall(function() object[key] = value end)
+    end
+    local function track(object) state.Objects[#state.Objects + 1] = object; return object end
+    local function sanitize(object)
+        for _, child in ipairs(object:GetDescendants()) do
+            if child:IsA("LuaSourceContainer") or child:IsA("Humanoid") or child:IsA("Animator")
+                or child:IsA("BodyMover") or child:IsA("Constraint") or child:IsA("JointInstance")
+                or child:IsA("ProximityPrompt") or child:IsA("Sound") then child:Destroy() end
+        end
+    end
+    local function findModel(data)
+        local modelName = data.CharacterModelName
+        if type(modelName) == "string" then
+            local candidate = storage:FindFirstChild(modelName, true)
+            if candidate and candidate:IsA("Model") then return candidate end
+        end
+        for _, player in ipairs(players:GetPlayers()) do
+            local model = player.Character
+            if model and model ~= Player.Character and model:GetAttribute("CharacterName") == state.Hero
+                and (model:GetAttribute("SkinName") or "Default") == state.Skin then return model end
+        end
+        return nil
+    end
+    local function applyAppearance(character, data)
+        if character:GetAttribute("CharacterName") == state.Hero
+            and (character:GetAttribute("SkinName") or "Default") == state.Skin then return true end
+        local source = findModel(data)
+        if not source then return false end
+        local container = track(Instance.new("Folder"))
+        container.Name, container.Parent = "PRIME_LocalSkin", character
+        local bodyCount = 0
+        local dressed = source:FindFirstChildOfClass("Shirt") or source:FindFirstChildOfClass("Pants")
+        for _, part in ipairs(source:GetChildren()) do
+            local target = character:FindFirstChild(part.Name)
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and target and target:IsA("BasePart") then
+                local textured = part:IsA("MeshPart") and part.TextureID ~= "" or part:FindFirstChildOfClass("SpecialMesh")
+                if dressed and not textured then remember(target, "Color", part.Color); bodyCount = bodyCount + 1
+                else
+                    local ok, clone = pcall(part.Clone, part)
+                    if ok and clone then
+                        sanitize(clone)
+                        for _, nested in ipairs(clone:GetDescendants()) do
+                            if nested:IsA("BasePart") then nested:Destroy() end
+                        end
+                        clone.Name = "Skin_" .. part.Name
+                        clone.Anchored, clone.CanCollide, clone.CanTouch, clone.CanQuery, clone.Massless = false, false, false, false, true
+                        clone.CFrame = target.CFrame
+                        clone.LocalTransparencyModifier = 0
+                        clone.Parent = container
+                        local weld = Instance.new("WeldConstraint")
+                        weld.Part0, weld.Part1, weld.Parent = target, clone, clone
+                        bodyCount = bodyCount + 1
+                        remember(target, "LocalTransparencyModifier", 1)
+                        for _, child in ipairs(target:GetChildren()) do if child:IsA("Decal") then remember(child, "Transparency", 1) end end
+                    end
+                end
+            end
+        end
+        if bodyCount == 0 then return false end
+        for _, item in ipairs(character:GetChildren()) do
+            if item:IsA("Accessory") then
+                for _, part in ipairs(item:GetDescendants()) do if part:IsA("BasePart") then remember(part, "LocalTransparencyModifier", 1) end end
+            elseif item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic") then
+                state.Removed[#state.Removed + 1] = {Object = item, Parent = character}
+                item.Parent = nil
+            end
+        end
+        for _, item in ipairs(source:GetChildren()) do
+            if item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic") then
+                local clone = track(item:Clone()); clone.Parent = character
+            elseif item:IsA("Accessory") then
+                local handle = item:FindFirstChild("Handle")
+                local originalWeld = handle and handle:FindFirstChild("AccessoryWeld")
+                local target = originalWeld and originalWeld.Part1 and character:FindFirstChild(originalWeld.Part1.Name)
+                if target and target:IsA("BasePart") then
+                    local clone = track(item:Clone()); sanitize(clone)
+                    clone.Parent = container
+                    local clonedHandle = clone:FindFirstChild("Handle")
+                    if clonedHandle then
+                        local sourceFrame = clonedHandle.CFrame
+                        local handleFrame = target.CFrame * originalWeld.C0 * originalWeld.C1:Inverse()
+                        for _, part in ipairs(clone:GetDescendants()) do
+                            if part:IsA("BasePart") then
+                                part.Anchored, part.CanCollide, part.CanTouch, part.CanQuery, part.Massless = false, false, false, false, true
+                                local relative = sourceFrame:ToObjectSpace(part.CFrame)
+                                part.CFrame = handleFrame * relative
+                                if part ~= clonedHandle then
+                                    local joint = Instance.new("WeldConstraint")
+                                    joint.Part0, joint.Part1, joint.Parent = clonedHandle, part, part
+                                end
+                            end
+                        end
+                        local weld = Instance.new("Weld")
+                        weld.Part0, weld.Part1, weld.C0, weld.C1 = target, clonedHandle, originalWeld.C0, originalWeld.C1
+                        weld.Parent = clonedHandle
+                    end
+                end
+            end
+        end
+        return true
+    end
+    local function effectRoot()
+        local effects = storage:FindFirstChild("Effects")
+        local assets = effects and effects:FindFirstChild("Assets")
+        return assets and assets:FindFirstChild("Characters")
+    end
+    local function findEffect(root, name)
+        return root and type(name) == "string" and root:FindFirstChild(name, true) or nil
+    end
+    local function effectSources(data)
+        local root, result, seen = effectRoot(), {}, {}
+        if not root then return result end
+        local function add(name)
+            if type(name) ~= "string" or seen[name] then return end
+            local variant = state.Skin ~= "Default" and findEffect(root, name .. "_" .. state.Skin)
+            local asset = variant or findEffect(root, name)
+            if asset and not seen[asset] then seen[name], seen[asset] = true, true; result[#result + 1] = asset end
+        end
+        if type(data.MenuEffectParams) == "table" then add(data.MenuEffectParams.EffectSetName) end
+        local modules = storage:FindFirstChild("Abilities_Client")
+        local module = modules and modules:FindFirstChild(state.Hero)
+        if not module and modules then
+            for _, candidate in ipairs(modules:GetChildren()) do
+                if candidate:IsA("ModuleScript") and state.Hero:lower():sub(1, #candidate.Name) == candidate.Name:lower() then module = candidate; break end
+            end
+        end
+        if module and definitions[module] == nil then
+            local ok, value = PrimeRuntime.Protect(require, module)
+            definitions[module] = ok and type(value) == "table" and value or false
+        end
+        local abilities = module and definitions[module]
+        for _, ability in pairs(data.Abilities or {}) do
+            local definition = abilities and abilities[ability]
+            local name = type(definition) == "table" and definition.CharacterEffect
+            if type(name) == "string" and (name:find("Aura", 1, true) or name:find("Flight", 1, true)) and #result < 3 then add(name) end
+        end
+        return result
+    end
+    local function applyEffects(character, data)
+        for _, source in ipairs(effectSources(data)) do
+            local clone = source:Clone()
+            sanitize(clone)
+            for _, child in ipairs(clone:GetChildren()) do
+                local target = character:FindFirstChild(child.Name, true)
+                if child:IsA("Attachment") and target and target:IsA("BasePart") then
+                    for _, descendant in ipairs(child:GetDescendants()) do
+                        if descendant:IsA("BasePart") then descendant:Destroy() end
+                    end
+                    child.Parent = target
+                    track(child)
+                    state.EffectCount = state.EffectCount + 1
+                    for _, effect in ipairs(child:GetDescendants()) do
+                        if effect:IsA("ParticleEmitter") then
+                            local modifiers = data.VfxModifiers
+                            if type(modifiers) == "table" then
+                                local points = {}
+                                for _, point in ipairs(effect.Color.Keypoints) do
+                                    local h, saturation, brightness = point.Value:ToHSV()
+                                    local color = Color3.fromHSV((h + (modifiers.Hue or 0)) % 1,
+                                        math.clamp(saturation + (modifiers.Saturation or 0), 0, 1),
+                                        math.clamp(brightness + (modifiers.Brightness or 0), 0, 1))
+                                    points[#points + 1] = ColorSequenceKeypoint.new(point.Time, color)
+                                end
+                                effect.Color = ColorSequence.new(points)
+                            end
+                            effect.Enabled = true
+                            if effect.Rate == 0 then effect:Emit(math.clamp(tonumber(effect:GetAttribute("EmitCount")) or 12, 1, 60)) end
+                        elseif effect:IsA("Trail") or effect:IsA("Beam") or effect:IsA("Light") then effect.Enabled = true end
+                    end
+                end
+            end
+            clone:Destroy()
+        end
+    end
+    local function refresh()
+        clear()
+        local character = Player.Character
+        local data = catalog[state.Hero] and catalog[state.Hero].Skins[state.Skin]
+        if not character or not data or PrimeRuntime.IsShuttingDown then
+            if status then status:SetDesc("Spawn a character to preview a local skin.") end
+            return
+        end
+        if state.Appearance then state.AppearanceApplied = applyAppearance(character, data) end
+        if state.Effects then applyEffects(character, data) end
+        if status then
+            local appearance = not state.Appearance and "Off" or state.AppearanceApplied and "Applied" or "Model not loaded"
+            status:SetDesc("Appearance: " .. appearance .. " | Effect attachments: " .. state.EffectCount)
+        end
+    end
+    local function safeRefresh()
+        local ok, failure = PrimeRuntime.Protect(refresh)
+        if not ok then clear(); Notify({Title = "Local Skin Preview", Content = tostring(failure), Duration = 4}) end
+    end
+    Tabs.Main:AddSection("Local Skin Preview")
+    status = Tabs.Main:AddParagraph({Title = "Local appearance and effects", Content = "Exact appearance requires a skin model already loaded by the game."})
+    Tabs.Main:AddDropdown("LocalSkinHero", {Title = "Skin Character", Values = heroes, Default = state.Hero, ConfigOrder = 10,
+        Callback = function(value)
+            state.Hero = value
+            local names = skinNames(value)
+            state.Skin = names[1]
+            if skinDropdown then skinDropdown:SetValues(names); skinDropdown:SetValue(state.Skin) end
+            safeRefresh()
+        end})
+    local names = skinNames(state.Hero)
+    state.Skin = names[1]
+    skinDropdown = Tabs.Main:AddDropdown("LocalSkinName", {Title = "Skin", Values = names, Default = state.Skin, ConfigOrder = 20,
+        Callback = function(value) state.Skin = value; safeRefresh() end})
+    Tabs.Main:AddToggle("LocalSkinAppearance", {Title = "Local Skin Appearance", Default = false,
+        Callback = function(value) state.Appearance = value; safeRefresh() end})
+    Tabs.Main:AddToggle("LocalSkinEffects", {Title = "Local Skin Effects", Default = false,
+        Callback = function(value) state.Effects = value; safeRefresh() end})
+    Tabs.Main:AddButton({Title = "Refresh Local Skin", Callback = safeRefresh})
+    local function bindCharacter(character)
+        for _, connection in ipairs(characterConnections) do connection:Disconnect() end
+        table.clear(characterConnections)
+        state.Epoch = state.Epoch + 1
+        local epoch = state.Epoch
+        clear()
+        if not character then return end
+        local pending = false
+        local function schedule()
+            if pending then return end
+            pending = true
+            task.delay(0.2, function()
+                pending = false
+                if epoch == state.Epoch and not PrimeRuntime.IsShuttingDown then safeRefresh() end
+            end)
+        end
+        characterConnections[#characterConnections + 1] = character.ChildAdded:Connect(function(child)
+            if child:IsA("BasePart") and (state.Appearance or state.Effects) then schedule() end
+        end)
+        task.delay(0.6, function()
+            if epoch == state.Epoch and not PrimeRuntime.IsShuttingDown then safeRefresh() end
+        end)
+    end
+    TrackRuntimeConnection(Player.CharacterAdded:Connect(bindCharacter))
+    TrackRuntimeConnection(Player.CharacterRemoving:Connect(function() bindCharacter(nil) end))
+    bindCharacter(Player.Character)
+    PrimeRuntime.LocalSkinPreview = {Refresh = safeRefresh, Clear = clear, State = state}
+    TrackRuntimeCleanup(function()
+        state.Epoch = state.Epoch + 1
+        clear()
+        for _, connection in ipairs(characterConnections) do connection:Disconnect() end
+        table.clear(characterConnections)
+        PrimeRuntime.LocalSkinPreview = nil
     end)
 end
