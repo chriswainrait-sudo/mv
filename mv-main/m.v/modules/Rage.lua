@@ -61,7 +61,7 @@ local function startStormFogRemover()
         end
         
         if processedCount > 0 then
-            print("[Storm_Fog Remover] Processed " .. processedCount .. " objects")
+                                                                                   
         end
     end)
     stormFogRemoverConnection = workspace.DescendantAdded:Connect(function(descendant)
