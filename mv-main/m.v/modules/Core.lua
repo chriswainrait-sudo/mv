@@ -17356,6 +17356,7 @@ function NexusUI:CreateWindow(options)
         end
 
         function tabObject:AddDropdown(id, data)
+            local isMulti = data and data.Multi == true
             local horizontalInset = math.max(0, tonumber(data and data.HorizontalInset) or 8)
             local selectorHeight = math.max(20, tonumber(data and data.SelectorHeight) or 36)
             local listMaxHeight = math.max(90, tonumber(data and data.ListMaxHeight) or 210)
@@ -17442,9 +17443,10 @@ function NexusUI:CreateWindow(options)
             local optionViews, openTween, arrowTween = {}, nil, nil
             local function refreshSelection(value)
                 for v, item in pairs(optionViews) do
-                    item[1]:SetAttribute("Selected", v == value)
-                    item[3].Visible = v == value
-                    item[4].Visible = v == value
+                    local selected = isMulti and type(value) == "table" and value[v] == true or not isMulti and v == value
+                    item[1]:SetAttribute("Selected", selected)
+                    item[3].Visible = selected
+                    item[4].Visible = selected
                     item[5](false)
                 end
             end
@@ -17489,7 +17491,9 @@ function NexusUI:CreateWindow(options)
                 Values = {},
                 Opened = false,
                 IsDropdown = true,
+                IsMulti = isMulti,
             }
+            if isMulti then dropdown.Value = {} end
 
             local function connectActivated(guiObject, callback)
                 local hitbox = Instance.new("TextButton")
@@ -17524,11 +17528,30 @@ function NexusUI:CreateWindow(options)
                 if count == 0 then
                     selectorLabel.Text = "No options available"
                 else
-                    selectorLabel.Text = (dropdown.Value and tostring(dropdown.Value) or "Select...")
+                    if isMulti then
+                        local selected = 0
+                        for _, enabled in pairs(dropdown.Value or {}) do if enabled then selected = selected + 1 end end
+                        selectorLabel.Text = tostring(selected) .. " selected"
+                    else
+                        selectorLabel.Text = dropdown.Value and tostring(dropdown.Value) or "Select..."
+                    end
                 end
             end
 
             local function setValue(value, invokeCallback)
+                if isMulti then
+                    if type(value) ~= "table" then return false end
+                    local chosen = {}
+                    for key, enabled in pairs(value) do
+                        if type(key) == "number" and type(enabled) == "string" then chosen[enabled] = true
+                        elseif type(key) == "string" and enabled == true then chosen[key] = true end
+                    end
+                    dropdown.Value = chosen
+                    refreshSelection(chosen)
+                    updateOpenState(dropdown.Opened)
+                    if invokeCallback ~= false and data and data.Callback then pcall(data.Callback, table.clone(chosen)) end
+                    return true
+                end
                 if value == nil then return false end
                 local found = false
                 for _, availableValue in ipairs(dropdown.Values) do
@@ -17613,7 +17636,11 @@ function NexusUI:CreateWindow(options)
                     optionPadding.PaddingRight = UDim.new(0, 36)
                     optionPadding.Parent = optionLabel
                     connectActivated(option, function()
-                        setValue(value, true)
+                        if isMulti then
+                            local chosen = table.clone(dropdown.Value or {})
+                            chosen[value] = not chosen[value] or nil
+                            setValue(chosen, true)
+                        else setValue(value, true) end
                     end)
                 end
                 refreshSelection(dropdown.Value)
@@ -17630,7 +17657,7 @@ function NexusUI:CreateWindow(options)
                 for _, value in ipairs(values or {}) do
                     table.insert(self.Values, value)
                 end
-                if self.Value then
+                if self.Value and not isMulti then
                     local stillExists = false
                     for _, value in ipairs(self.Values) do
                         if value == self.Value then
@@ -17650,7 +17677,7 @@ function NexusUI:CreateWindow(options)
             end
 
             function dropdown:GetValue()
-                return self.Value
+                return isMulti and table.clone(self.Value or {}) or self.Value
             end
 
             connectActivated(selector, function()
@@ -18238,7 +18265,7 @@ do
     end
 
     local function collectConfig()
-        local data = {Version = 1, Toggles = {}, Sliders = {}, Dropdowns = {}}
+        local data = {Version = 2, Toggles = {}, Sliders = {}, Dropdowns = {}}
         for id, option in pairs(NexusUI.Options) do
             if type(option) == "table" and not CONFIG_EXCLUDED[id] then
                 if option.IsToggle then
@@ -18246,7 +18273,7 @@ do
                 elseif option.IsSlider then
                     data.Sliders[id] = tonumber(option.Value)
                 elseif option.IsDropdown and option.Value ~= nil then
-                    data.Dropdowns[id] = tostring(option.Value)
+                    data.Dropdowns[id] = option.IsMulti and table.clone(option.Value) or tostring(option.Value)
                 end
             end
         end
@@ -18280,20 +18307,33 @@ do
             end
         end
 
-        for id, value in pairs(type(data.Dropdowns) == "table" and data.Dropdowns or {}) do
+        local dropdownValues = type(data.Dropdowns) == "table" and data.Dropdowns or {}
+        local dropdownIds = {}
+        for id in pairs(dropdownValues) do dropdownIds[#dropdownIds + 1] = id end
+        table.sort(dropdownIds, function(a, b)
+            local first, second = NexusUI.Options[a], NexusUI.Options[b]
+            local firstOrder, secondOrder = type(first) == "table" and first.ConfigOrder or 0, type(second) == "table" and second.ConfigOrder or 0
+            firstOrder, secondOrder = firstOrder or 0, secondOrder or 0
+            if firstOrder ~= secondOrder then return firstOrder < secondOrder end
+            return tostring(a) < tostring(b)
+        end)
+        for _, id in ipairs(dropdownIds) do
+            local value = dropdownValues[id]
             local option = NexusUI.Options[id]
-            if type(option) == "table" and option.IsDropdown and not CONFIG_EXCLUDED[id]
-                and tostring(option.Value) ~= value then
-                for _, available in ipairs(option.Values) do
-                    if tostring(available) == value then
-                        if pcall(function() option:SetValue(available) end) then applied += 1 end
-                        break
+            if type(option) == "table" and option.IsDropdown and not CONFIG_EXCLUDED[id] then
+                if option.IsMulti and type(value) == "table" then
+                    if pcall(function() option:SetValue(value) end) then applied += 1 end
+                elseif not option.IsMulti and tostring(option.Value) ~= tostring(value) then
+                    for _, available in ipairs(option.Values) do
+                        if tostring(available) == tostring(value) then
+                            if pcall(function() option:SetValue(available) end) then applied += 1 end
+                            break
+                        end
                     end
                 end
             end
         end
 
-                                                                                   
         for id, value in pairs(type(data.Toggles) == "table" and data.Toggles or {}) do
             local option = NexusUI.Toggles[id]
             if type(option) == "table" and option.Value ~= (value == true) then
@@ -18545,6 +18585,7 @@ local function bindMarvelControls(tab)
             local option = Options[id]
             assert(type(option) == "table", "Marvel Omega: missing control " .. tostring(id))
             option.Frame = type(control) == "table" and control.Frame or control
+            option.ConfigOrder = tonumber(data.ConfigOrder) or 0
             function option:OnChanged(callback)
                 assert(type(callback) == "function", "OnChanged expects a function")
                 listeners[#listeners + 1] = callback
@@ -18557,6 +18598,7 @@ local function bindMarvelControls(tab)
 end
 for _, tab in pairs(Tabs) do bindMarvelControls(tab) end
 
+PrimeRuntime.SilentAimSettings = {Priority = "Nearest", Preferred = {}, Ignored = {}, IgnoredAbilities = {}}
 local PlayerInputModule
 
 local function getGameModule(name)
