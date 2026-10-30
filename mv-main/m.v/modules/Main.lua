@@ -1024,6 +1024,83 @@ Tabs.Main:AddParagraph({
     end)
 end
 
+do
+    local placeholder = "Select artifact holder..."
+    local targets, lastSignature = {}, nil
+    local alive, elapsed = true, 0
+    local dropdown = Tabs.Main:AddDropdown("ArtifactHolderTeleport", {
+        Title = "Teleport to Artifact Holder",
+        Description = "Select a player with a Stone or Darkhold. List updates automatically.",
+        Values = {placeholder}, Default = placeholder, Multi = false
+    })
+    local function refreshHolders()
+        if not alive or PrimeRuntime.IsShuttingDown then return end
+        local holders = PrimeRuntime.GetArtifactHolders()
+        local entries = {}
+        for owner, info in pairs(holders) do
+            entries[#entries + 1] = {Owner = owner, Text = info.text}
+        end
+        table.sort(entries, function(a, b) return a.Owner.Name:lower() < b.Owner.Name:lower() end)
+        local values, nextTargets = {placeholder}, {}
+        for _, entry in ipairs(entries) do
+            local label = "@" .. entry.Owner.Name .. " | " .. entry.Text
+            values[#values + 1] = label
+            nextTargets[label] = entry.Owner
+        end
+        targets = nextTargets
+        local signature = table.concat(values, "\n")
+        if signature ~= lastSignature then
+            lastSignature = signature
+            dropdown:SetValues(values)
+        end
+    end
+    dropdown:OnChanged(function(value)
+        if value == placeholder or not alive or PrimeRuntime.IsShuttingDown then return end
+        local owner = targets[value]
+        dropdown:SetValue(placeholder)
+        local holders = PrimeRuntime.GetArtifactHolders()
+        local info = owner and holders[owner]
+        local character = Player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local targetRoot = info and info.char and info.char:FindFirstChild("HumanoidRootPart")
+        if not owner or owner.Parent ~= game:GetService("Players") or not info or owner.Character ~= info.char
+            or not targetRoot or not targetRoot:IsA("BasePart") or not targetRoot:IsDescendantOf(workspace) then
+            refreshHolders()
+            Notify({Title = "Artifact Teleport", Content = "This player no longer holds an artifact or is unavailable.", Duration = 4})
+            return
+        end
+        if not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then
+            Notify({Title = "Artifact Teleport", Content = "Spawn your character before teleporting.", Duration = 4})
+            return
+        end
+        for _, id in ipairs({"BossFarmToggle", "AutoFarmToggle", "AutoCollectToggle", "AutomaticStoneCollectionToggle"}) do
+            local option = Options[id]
+            if option and option.Value then option:SetValue(false) end
+        end
+        local destination = targetRoot.Position - targetRoot.CFrame.LookVector * 5 + Vector3.new(0, 2, 0)
+        local success = PrimeRuntime.Protect(function()
+            character:PivotTo(CFrame.lookAt(destination, targetRoot.Position))
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end)
+        Notify({Title = "Artifact Teleport", Content = success and ("Teleported to @" .. owner.Name .. " | " .. info.text)
+            or "Unable to teleport your character.", Duration = 4})
+    end)
+    refreshHolders()
+    TrackRuntimeConnection(game:GetService("RunService").Heartbeat:Connect(function(delta)
+        elapsed = elapsed + delta
+        if elapsed < 1 then return end
+        elapsed = 0
+        PrimeRuntime.Run("Artifact holder list", refreshHolders)
+    end))
+    TrackRuntimeCleanup(function()
+        alive = false
+        table.clear(targets)
+    end)
+end
+
+
 TrackRuntimeCleanup(function()
     toggleAutomaticStoneCollection(false)
     toggleAutoCollect(false)
