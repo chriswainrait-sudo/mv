@@ -4,7 +4,7 @@ end
 
 safeCall("SelectTab", function() Window:SelectTab(1) end)
 safeCall("Notify loaded", function()
-    Notify({Title = "Liqdation", Content = "Marvel Omega has been loaded.", Duration = 4.5})
+    Notify({Title = "PRIME", Content = "Marvel Omega has been loaded.", Duration = 4.5})
 end)
 safeCall("AncestryChanged", function()
     TrackRuntimeConnection(Player.AncestryChanged:Connect(function(_, parent)
