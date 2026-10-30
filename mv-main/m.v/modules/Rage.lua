@@ -204,6 +204,10 @@ local function toggleFlightSpeed(value)
     end
 end
 
+local aimSettings = PrimeRuntime.SilentAimSettings
+local stoneCache = setmetatable({}, {__mode = "k"})
+local activeAbilitySlots, abilityFilterConnections = {}, {}
+local targetedAimEnabled = false
 local silentAimEnabled = false
 local silentAimMaxDistance = 500
 local silentAimAimPart = "Head"
@@ -222,6 +226,77 @@ local silentAimHookTarget = nil
 local silentAimWrapper = nil
 local silentAimHookMode = nil
 local silentAimLastHookAttempt = 0
+local silentAimGeneration = 0
+local function ignoredCharacter(character)
+    local owner = game:GetService("Players"):GetPlayerFromCharacter(character)
+    return owner and (aimSettings.Ignored[owner.Name] == true
+        or silentAimIgnoreFriends and silentAimFriendCache and silentAimFriendCache[owner]) or false
+end
+local function clearAbilityFilters()
+    for _, connection in ipairs(abilityFilterConnections) do pcall(connection.Disconnect, connection) end
+    table.clear(abilityFilterConnections)
+    table.clear(activeAbilitySlots)
+end
+local function bindAbilityFilters()
+    if #abilityFilterConnections > 0 then return end
+    local dependencies = game:GetService("ReplicatedStorage"):FindFirstChild("Dependencies")
+    local module = dependencies and dependencies:FindFirstChild("Event")
+    if not module then return end
+    local ok, bus = PrimeRuntime.Protect(require, module)
+    if not ok or type(bus) ~= "table" or type(bus.Connect) ~= "function" then return end
+    for index = 1, 5 do
+        local slot = "Ability" .. index
+        for _, active in ipairs({true, false}) do
+            local suffix = active and "Activated" or "Deactivated"
+            local success, connection = pcall(bus.Connect, bus, slot .. suffix, function()
+                activeAbilitySlots[slot] = active or nil
+            end)
+            if success and connection then abilityFilterConnections[#abilityFilterConnections + 1] = connection end
+        end
+    end
+end
+local function abilityFromValues(values)
+    if type(values) ~= "table" then return nil end
+    for _, value in pairs(values) do
+        if type(value) == "table" and rawget(value, "Character") == Player.Character then
+            local slot = rawget(value, "AbilityNumber")
+            if type(slot) == "number" then slot = "Ability" .. slot end
+            if type(slot) == "string" and slot:match("^Ability[1-5]$") then return slot end
+        end
+    end
+end
+local function ignoreCurrentAbility()
+    if not next(aimSettings.IgnoredAbilities) then return false end
+    if debug and type(debug.info) == "function" then
+        for level = 2, 9 do
+            if type(debug.getstack) == "function" then
+                local ok, values = pcall(debug.getstack, level)
+                local slot = ok and abilityFromValues(values)
+                if slot then return aimSettings.IgnoredAbilities[slot] == true end
+            end
+            if type(debug.getupvalues) == "function" then
+                local ok, callback = pcall(debug.info, level, "f")
+                if ok and type(callback) == "function" then
+                    local read, values = pcall(debug.getupvalues, callback)
+                    local slot = read and abilityFromValues(values)
+                    if slot then return aimSettings.IgnoredAbilities[slot] == true end
+                end
+            end
+        end
+    end
+    for slot in pairs(activeAbilitySlots) do
+        if aimSettings.IgnoredAbilities[slot] then return true end
+    end
+    return false
+end
+local function hasStone(character)
+    local now, cached = os.clock(), stoneCache[character]
+    if cached and now - cached.Time < 0.30 then return cached.Value end
+    local found = false
+    if type(PrimeRuntime.CharacterHasStone) == "function" then found = PrimeRuntime.CharacterHasStone(character) end
+    stoneCache[character] = {Time = now, Value = found == true}
+    return found == true
+end
 
 local function getSilentAimPosition(targetPart)
     local position = targetPart.Position
@@ -260,103 +335,62 @@ local function getSilentAimPosition(targetPart)
     return position + offset
 end
 
-local function getNearestEnemy()
-    local Players = game:GetService("Players")
-    local CollectionService = game:GetService("CollectionService")
+local function targetedEligible(model, range)
+    if typeof(model) ~= "Instance" or not model:IsA("Model") then return false end
+    local character = Player.Character
+    if not character or model == character or not model:IsDescendantOf(workspace) then return false end
+    local invisible = model:GetAttribute("Invisible")
+    if model:HasTag("Invisible") or model:HasTag("AimIgnore") or model:HasTag("LocalDriverAimIgnore")
+        or invisible == true or type(invisible) == "number" and invisible > 0 then return false end
+    return model:HasTag("Damageable") and (model:GetPivot().Position - character:GetPivot().Position).Magnitude <= range
+end
 
-    local LocalPlayer = Players.LocalPlayer
-    local NearestEnemy = nil
-    local ShortestDistance = silentAimMaxDistance
-
-    local MyCharacter = LocalPlayer.Character
-    local MyRoot = MyCharacter and (
-        MyCharacter:FindFirstChild("HumanoidRootPart")
-        or MyCharacter.PrimaryPart
-        or MyCharacter:FindFirstChild("UpperTorso")
-        or MyCharacter:FindFirstChild("Torso")
-    )
-    if not MyRoot or not MyRoot:IsA("BasePart") then
-        return nil
+local function getNearestEnemy(maxRange, targeted)
+    local players = game:GetService("Players")
+    local character = Player.Character
+    local root = character and (character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart)
+    if not root or not root:IsA("BasePart") then return nil end
+    local seen, candidates = {}, {}
+    local function add(model)
+        if typeof(model) ~= "Instance" or not model:IsA("Model") or model == character or seen[model] then return end
+        seen[model] = true
+        if targeted and not targetedEligible(model, maxRange) then return end
+        local owner = players:GetPlayerFromCharacter(model)
+        if owner and aimSettings.Ignored[owner.Name] then return end
+        if owner and silentAimIgnoreFriends and silentAimFriendCache[owner] then return end
+        if silentAimTargetName ~= "Nearest" and (not owner or owner.Name ~= silentAimTargetName) then return end
+        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        local part = model:FindFirstChild(silentAimAimPart) or model:FindFirstChild("HumanoidRootPart")
+            or model.PrimaryPart or model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
+        if not humanoid or humanoid.Health <= 0 or not part or not part:IsA("BasePart") then return end
+        local distance = (part.Position - root.Position).Magnitude
+        if distance > math.min(silentAimMaxDistance, maxRange or silentAimMaxDistance) then return end
+        candidates[#candidates + 1] = {Part = part, Character = model, Owner = owner, Distance = distance,
+            Health = humanoid.Health, Preferred = owner and aimSettings.Preferred[owner.Name] and 0 or 1}
     end
-
-    local MyPosition = MyRoot.Position
-
-    if silentAimTargetName and silentAimTargetName ~= "Nearest" then
-        local targetPlayer = Players:FindFirstChild(silentAimTargetName)
-        local targetCharacter = targetPlayer and targetPlayer.Character
-        if targetCharacter then
-            if silentAimIgnoreFriends and silentAimFriendCache[targetPlayer] then
-                return nil
-            end
-            local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
-            if targetHumanoid and targetHumanoid.Health > 0 then
-                local targetPart = targetCharacter:FindFirstChild(silentAimAimPart)
-                    or targetCharacter:FindFirstChild("HumanoidRootPart")
-                    or targetCharacter.PrimaryPart
-                    or targetCharacter:FindFirstChild("UpperTorso")
-                    or targetCharacter:FindFirstChild("Torso")
-                if targetPart and targetPart:IsA("BasePart")
-                    and (targetPart.Position - MyPosition).Magnitude <= silentAimMaxDistance then
-                    return targetPart
-                end
-            end
+    for _, model in ipairs(game:GetService("CollectionService"):GetTagged(targeted and "Damageable" or "Character")) do add(model) end
+    for _, other in ipairs(players:GetPlayers()) do if other ~= Player then add(other.Character) end end
+    local mode = aimSettings.Priority
+    if mode == "Stone Holders" or mode == "Stones + Low Health" or mode == "Low Health + Stones" then
+        for _, candidate in ipairs(candidates) do candidate.Stone = candidate.Owner and hasStone(candidate.Character) and 0 or 1 end
+    end
+    table.sort(candidates, function(a, b)
+        if a.Preferred ~= b.Preferred then return a.Preferred < b.Preferred end
+        if mode == "Low Health + Stones" or mode == "Lowest Health" then
+            if a.Health ~= b.Health then return a.Health < b.Health end
         end
-        return nil
-    end
-
-    local Characters = {}
-    local SeenCharacters = {}
-
-    local function addCharacter(Character)
-        if typeof(Character) == "Instance"
-            and Character:IsA("Model")
-            and Character ~= MyCharacter
-            and not SeenCharacters[Character] then
-            SeenCharacters[Character] = true
-            Characters[#Characters + 1] = Character
-        end
-    end
-
-    for _, Character in ipairs(CollectionService:GetTagged("Character")) do
-        addCharacter(Character)
-    end
-
-    for _, OtherPlayer in ipairs(Players:GetPlayers()) do
-        if OtherPlayer ~= LocalPlayer then
-            addCharacter(OtherPlayer.Character)
-        end
-    end
-
-    for _, Character in ipairs(Characters) do
-        if silentAimIgnoreFriends then
-            local characterPlayer = Players:GetPlayerFromCharacter(Character)
-            if characterPlayer and silentAimFriendCache[characterPlayer] then
-                continue
-            end
-        end
-        local Humanoid = Character:FindFirstChildOfClass("Humanoid")
-        if Humanoid and Humanoid.Health > 0 then
-            local TargetPart = Character:FindFirstChild(silentAimAimPart)
-                or Character:FindFirstChild("HumanoidRootPart")
-                or Character.PrimaryPart
-                or Character:FindFirstChild("UpperTorso")
-                or Character:FindFirstChild("Torso")
-            if TargetPart and TargetPart:IsA("BasePart") then
-                local Distance = (TargetPart.Position - MyPosition).Magnitude
-                if Distance <= ShortestDistance then
-                    ShortestDistance = Distance
-                    NearestEnemy = TargetPart
-                end
-            end
-        end
-    end
-
-    return NearestEnemy
+        if a.Stone and a.Stone ~= b.Stone then return a.Stone < b.Stone end
+        if mode == "Stones + Low Health" and a.Health ~= b.Health then return a.Health < b.Health end
+        if a.Distance ~= b.Distance then return a.Distance < b.Distance end
+        return (a.Owner and a.Owner.Name or a.Character.Name) < (b.Owner and b.Owner.Name or b.Character.Name)
+    end)
+    return candidates[1] and candidates[1].Part or nil
 end
 
 local targetLockEnabled = false
 local targetLockMaxDistance = 800
 local targetLockPart
+PrimeRuntime.ResetCombatTarget = function() targetLockPart = nil end
 local targetModule
 local aimAssistEnabled = false
 local aimAssistStrength = 0.2
@@ -379,7 +413,7 @@ local function targetIsValid(part)
     local character = Player.Character
     local root = character and (character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart)
     local targetPart = resolveTargetPart(part)
-    return root and targetPart and targetPart:IsDescendantOf(workspace)
+    return root and targetPart and not ignoredCharacter(targetPart:FindFirstAncestorOfClass("Model")) and targetPart:IsDescendantOf(workspace)
         and (targetPart.Position - root.Position).Magnitude <= targetLockMaxDistance
 end
 
@@ -442,7 +476,7 @@ local function getAimModule()
         return nil
     end
 
-    local Success, Aim = pcall(require, AimScript)
+    local Success, Aim = PrimeRuntime.Protect(require, AimScript)
     if Success and type(Aim) == "table" and type(Aim.GetAimPosition) == "function" then
         return Aim
     end
@@ -483,7 +517,7 @@ local function installSilentAimHook()
 
     local OriginalFunction = nil
     local Wrapper = function(...)
-        if silentAimEnabled then
+        if silentAimEnabled and not ignoreCurrentAbility() then
             local NearestEnemy = getCombatTargetPart()
             if NearestEnemy then
                 return getSilentAimPosition(NearestEnemy)
@@ -524,23 +558,127 @@ local function installSilentAimHook()
     return true
 end
 
+local targetedHooks = {}
+local targetedBusy = false
+local targetedConnection
+local targetedGeneration = 0
+local targetedRange, targetedExtraRange = 100, 0
+local function restoreTargetedHooks()
+    for _, hook in ipairs(targetedHooks) do
+        if hook.Registry[hook.Name] == hook.Wrapper then hook.Registry[hook.Name] = hook.Original end
+    end
+    table.clear(targetedHooks)
+end
+local function installTargetedHooks()
+    if not targetedAimEnabled or PrimeRuntime.IsShuttingDown
+        or PrimeRuntime.BossFarm and PrimeRuntime.BossFarm.Enabled then return end
+    targetModule = targetModule or getGameModule("Target")
+    local system = shared and shared.System
+    local registries = {targetModule, system and system.StoredFunctions}
+    for _, registry in pairs(registries) do
+        if type(registry) == "table" then
+            for _, name in ipairs({"GetTarget", "SetTargetingRange", "AddTargetDistance"}) do
+                local exists = false
+                for _, hook in ipairs(targetedHooks) do
+                    if hook.Registry == registry and hook.Name == name then exists = true break end
+                end
+                local original = registry[name]
+                if not exists and type(original) == "function" then
+                    local wrapper
+                    if name == "GetTarget" then
+                        wrapper = function(range, ...)
+                            if not targetedAimEnabled or targetedBusy or PrimeRuntime.IsShuttingDown
+                                or PrimeRuntime.BossFarm and PrimeRuntime.BossFarm.Enabled then
+                                return original(range, ...)
+                            end
+                            if ignoreCurrentAbility() then return original(range, ...) end
+                            range = type(range) == "number" and range or targetedRange + targetedExtraRange
+                            if range ~= range or range <= 0 then return nil end
+                            range = math.min(range, silentAimMaxDistance)
+                            targetedBusy = true
+                            local ok, part = PrimeRuntime.Protect(getCombatTargetPart)
+                            targetedBusy = false
+                            if not ok then return original(range, ...) end
+                            local model = part and part:FindFirstAncestorOfClass("Model")
+                            if model and targetedEligible(model, range) and not ignoredCharacter(model) then return model end
+                            part = getNearestEnemy(range, true)
+                            return part and part:FindFirstAncestorOfClass("Model") or nil
+                        end
+                    elseif name == "SetTargetingRange" then
+                        wrapper = function(range, ...)
+                            if type(range) == "number" then targetedRange = range
+                            elseif not range then targetedExtraRange = 0 end
+                            return original(range, ...)
+                        end
+                    else
+                        wrapper = function(distance, ...)
+                            if type(distance) == "number" then targetedExtraRange = targetedExtraRange + distance end
+                            return original(distance, ...)
+                        end
+                    end
+                    registry[name] = wrapper
+                    targetedHooks[#targetedHooks + 1] = {Registry = registry, Name = name, Original = original, Wrapper = wrapper}
+                end
+            end
+        end
+    end
+end
+local function toggleTargetedAim(enabled)
+    targetedGeneration = targetedGeneration + 1
+    local generation = targetedGeneration
+    targetedAimEnabled = enabled == true
+    if targetedConnection then targetedConnection:Disconnect() targetedConnection = nil end
+    if not targetedAimEnabled then
+        restoreTargetedHooks()
+        if not silentAimEnabled then clearAbilityFilters() end
+        return
+    end
+    bindAbilityFilters()
+    installTargetedHooks()
+    local elapsed = 0
+    targetedConnection = game:GetService("RunService").Heartbeat:Connect(function(delta)
+        elapsed = elapsed + delta
+        if elapsed < 1 then return end
+        elapsed = 0
+        installTargetedHooks()
+    end)
+    task.spawn(function()
+        while targetedAimEnabled and generation == targetedGeneration and not PrimeRuntime.IsShuttingDown do
+            if silentAimIgnoreFriends and not silentAimEnabled then
+                for _, other in ipairs(game:GetService("Players"):GetPlayers()) do
+                    if other ~= Player then
+                        local ok, friend = pcall(Player.IsFriendsWith, Player, other.UserId)
+                        if ok then silentAimFriendCache[other] = friend end
+                    end
+                end
+            end
+            task.wait(5)
+        end
+    end)
+end
+
 PrimeRuntime.SetBossFarmAim = function(enabled)
     if enabled then
+        restoreTargetedHooks()
         restoreSilentAimHook()
     elseif silentAimEnabled and not PrimeRuntime.IsShuttingDown then
         installSilentAimHook()
     end
+    if not enabled then installTargetedHooks() end
 end
 
 local function enableSilentAim()
+    silentAimGeneration = silentAimGeneration + 1
+    local generation = silentAimGeneration
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local LocalPlayer = Players.LocalPlayer
 
+    bindAbilityFilters()
     installSilentAimHook()
 
     task.spawn(function()
-        while silentAimEnabled do
+        while silentAimEnabled and generation == silentAimGeneration do
             if silentAimIgnoreFriends then
                 for _, otherPlayer in ipairs(Players:GetPlayers()) do
                     if otherPlayer ~= LocalPlayer then
@@ -570,6 +708,18 @@ local function enableSilentAim()
             installSilentAimHook()
         end
 
+        if ignoreCurrentAbility() then
+            if type(originalGetAimPosition) == "function" then
+                local ok, position = PrimeRuntime.Protect(originalGetAimPosition)
+                local camera = workspace.CurrentCamera
+                if ok and typeof(position) == "Vector3" then
+                    LocalPlayer.Character:SetAttribute("AimPosition", position)
+                    local direction = camera and position - camera.CFrame.Position
+                    if direction and direction.Magnitude > 0.001 then LocalPlayer.Character:SetAttribute("LookDirection", direction.Unit) end
+                end
+            end
+            return
+        end
         local NearestEnemy = getCombatTargetPart()
         if NearestEnemy then
             local Character = LocalPlayer.Character
@@ -587,6 +737,8 @@ local function enableSilentAim()
 end
 
 local function disableSilentAim()
+    silentAimGeneration = silentAimGeneration + 1
+    if not targetedAimEnabled then clearAbilityFilters() end
     if silentAimConnection then
         silentAimConnection:Disconnect()
         silentAimConnection = nil
@@ -647,7 +799,8 @@ do
         end
     })
     
-    local SilentAimToggle = Tabs.Rage:AddToggle("SilentAimToggle", {
+    Tabs.Main:AddSection("Silent Aim")
+    local SilentAimToggle = Tabs.Main:AddToggle("SilentAimToggle", {
         Title = "Silent Aim", 
         Description = "Enable silent aim",
         Default = false
@@ -657,7 +810,16 @@ do
         toggleSilentAim(Options.SilentAimToggle.Value)
     end)
     
-    local SilentAimDistanceSlider = Tabs.Rage:AddSlider("SilentAimDistance", {
+    local TargetedAimToggle = Tabs.Main:AddToggle("TargetedAbilityAim", {
+        Title = "Targeted Ability Aim",
+        Description = "Select ability targets using aim priorities and exclusions. Respects ability range; Boss Farm takes priority.",
+        Default = false
+    })
+    TargetedAimToggle:OnChanged(function()
+        toggleTargetedAim(Options.TargetedAbilityAim.Value)
+    end)
+
+    local SilentAimDistanceSlider = Tabs.Main:AddSlider("SilentAimDistance", {
         Title = "Aim Distance", 
         Description = "Adjust silent aim distance (100-1200)",
         Default = 500,
@@ -669,7 +831,7 @@ do
         end
     })
 
-    local SilentAimPredictionToggle = Tabs.Rage:AddToggle("SilentAimPrediction", {
+    local SilentAimPredictionToggle = Tabs.Main:AddToggle("SilentAimPrediction", {
         Title = "Target Prediction",
         Description = "Lead moving targets using their velocity and current ping",
         Default = true
@@ -678,7 +840,7 @@ do
         silentAimPredictionEnabled = Options.SilentAimPrediction.Value
     end)
 
-    local SilentAimPredictionSlider = Tabs.Rage:AddSlider("SilentAimPredictionTime", {
+    local SilentAimPredictionSlider = Tabs.Main:AddSlider("SilentAimPredictionTime", {
         Title = "Prediction Time",
         Description = "Additional lead time in milliseconds",
         Default = 80,
@@ -700,7 +862,7 @@ do
         return values
     end
 
-    local SilentAimTargetDropdown = Tabs.Rage:AddDropdown("SilentAimTarget", {
+    local SilentAimTargetDropdown = Tabs.Main:AddDropdown("SilentAimTarget", {
         Title = "Silent Aim Target",
         Description = "Target a specific player or the nearest enemy",
         Values = getSilentAimTargetValues(),
@@ -711,7 +873,7 @@ do
         silentAimTargetName = value
     end)
 
-    local SilentAimIgnoreFriendsToggle = Tabs.Rage:AddToggle("SilentAimIgnoreFriends", {
+    local SilentAimIgnoreFriendsToggle = Tabs.Main:AddToggle("SilentAimIgnoreFriends", {
         Title = "Ignore Friends",
         Description = "Silent Aim will not target players from your friends list",
         Default = false
@@ -778,7 +940,14 @@ end
 TrackRuntimeCleanup(function()
     toggleStormFogRemover(false)
     toggleFlightSpeed(false)
+    toggleTargetedAim(false)
     toggleSilentAim(false)
     toggleTargetLock(false)
     toggleAimAssist(false)
 end)
+
+TrackRuntimeConnection(Player.CharacterRemoving:Connect(function()
+    table.clear(activeAbilitySlots)
+    table.clear(stoneCache)
+end))
+TrackRuntimeCleanup(clearAbilityFilters)
