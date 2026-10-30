@@ -1,8 +1,5 @@
 local function safeUI(label, fn)
-    local ok, err = pcall(fn)
-    if not ok then
-        warn("Marvel Omega [ESP/" .. label .. "]: " .. tostring(err))
-    end
+    return PrimeRuntime.Run("ESP/" .. tostring(label), fn)
 end
 
 local Visual = {
