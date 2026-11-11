@@ -6348,11 +6348,6 @@ Window = NexusUI:CreateWindow({
     MinimizeKey = Enum.KeyCode.LeftAlt
 })
 
-pcall(function()
-    StarterGui:SetCore("SendNotification", {
-        Title = "PRIME Loaded", Text = "Marvel Omega interface loaded", Duration = 4, Button1 = "OK"
-    })
-end)
 
 Tabs = {
     Main = Window:AddTab({Title = "Main"}),
