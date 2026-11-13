@@ -217,7 +217,7 @@ local function createImageBackground(parent)
     artwork.Position = UDim2.fromScale(0.5, 0.5)
     artwork.Size = UDim2.fromScale(1, 1)
     artwork.BackgroundTransparency, artwork.BorderSizePixel = 1, 0
-    artwork.ImageTransparency = 0.5
+    artwork.ImageTransparency = 0.9
     artwork.ScaleType = Enum.ScaleType.Stretch
     artwork.Active, artwork.Selectable, artwork.ZIndex = false, false, 2
     artwork.Parent = parent
@@ -5282,13 +5282,6 @@ function NexusUI:CreateWindow(options)
             local rowCorner = Instance.new("UICorner")
             rowCorner.CornerRadius = UDim.new(0, 6)
             rowCorner.Parent = toggleFrame
-            local rowStroke = Instance.new("UIStroke")
-            rowStroke.Name = "ToggleOutline"
-            rowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-            rowStroke.Thickness = 1
-            rowStroke.Transparency = 0.35
-            NexusUI:BindColor(rowStroke, "Color", function() return COLOR_TEXT_DIM end)
-            rowStroke.Parent = toggleFrame
 
 
                                                                  
