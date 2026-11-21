@@ -2367,6 +2367,21 @@ function NexusUI:CreateWindow(options)
             return dropdown
         end
 
+        function tabObject:AddParagraph(data)
+            local parent = getControlParent()
+            divider(parent, "paragraph")
+            local panel = new("Frame", {Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = #controls + 1}, parent)
+            new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, panel)
+            new("UIPadding", {PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 9)}, panel)
+            local function line(value, order, dim)
+                return caption(panel, {Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = order, Text = tostring(value or ""), TextSize = dim and 9 or 11, TextWrapped = true, Visible = tostring(value or "") ~= ""}, dim and dimColor or textColor)
+            end
+            local title, content = line(data and data.Title, 1, false), line(data and data.Content, 2, true)
+            table.insert(controls, panel)
+            return {Frame = panel, SetTitle = function(_, value) title.Text, title.Visible = tostring(value or ""), tostring(value or "") ~= "" end,
+                SetDesc = function(_, value) content.Text, content.Visible = tostring(value or ""), tostring(value or "") ~= "" end}
+        end
+
         function tabObject:AddButton(data)
             local hasDesc = data and data.Description and data.Description ~= ""
             local parent = getControlParent()
