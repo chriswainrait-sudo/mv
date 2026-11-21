@@ -2016,9 +2016,16 @@ function NexusUI:CreateWindow(options)
                 end
             end
 
-            -- Locking is disabled: toggles always stay usable. Kept as no-ops so
-            -- external callers (e.g. the loader) do not error.
-            function toggleOption:SetLocked(value) end
+            function toggleOption:SetLocked(value)
+                locked = value == true
+                self.Locked, self.Disabled = locked, locked
+                if locked and enabled then self:SetValue(false) end
+                refresh(false)
+            end
+
+            function toggleOption:SetDisabled(value)
+                self:SetLocked(value)
+            end
 
             function toggleOption:SetLockedText(text) end
 
